@@ -1,0 +1,13 @@
+map_path: data/full_map.png
+feature_type: orb
+min_match_count: 12
+roi_expand_pixels: 120
+resize_ratio: 1.0
+use_optical_flow: true
+use_kalman: true
+max_lost_frames: 10
+ratio_test: 0.75
+ransac_threshold: 5.0
+orb_nfeatures: 5000
+output_dir: outputs
+save_visualizations: false

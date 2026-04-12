@@ -1,0 +1,51 @@
+{
+  "source_page": "https://map.17173.com/rocom/maps/shijie",
+  "bootstrap_url": "https://ue.17173cdn.com/a/terra/web/bootstrap.js",
+  "bundle_url": "https://ue.17173cdn.com/a/terra/web/assets/index-CeHPvUtj.js",
+  "game_id": 1731003,
+  "game_key": "rocom",
+  "game_title": "洛克王国世界",
+  "map_name": "shijie",
+  "map_id": 4010,
+  "version": "v3_7f2d9c",
+  "min_zoom": 9,
+  "max_zoom": 13,
+  "initial_zoom": 11,
+  "map_maxzoom": 13,
+  "bounds": [
+    -1.4,
+    0.0,
+    0.0,
+    1.4
+  ],
+  "cover_url": "https://ue.17173cdn.com/a/terra/web/assets/rocom-shijie.jpg",
+  "cover_file": "rocom-shijie.jpg",
+  "stitched_map_file": "rocom-shijie-z13.png",
+  "stitched_map_projection": "web_mercator_tiles",
+  "tile_size": 256,
+  "max_zoom_tile_grid": {
+    "zoom": 13,
+    "tile_size": 256,
+    "x_min": 4064,
+    "x_max": 4095,
+    "y_min": 4064,
+    "y_max": 4095,
+    "tile_columns": 32,
+    "tile_rows": 32,
+    "pixel_width": 8192,
+    "pixel_height": 8192
+  },
+  "pois_api": "https://terra-api.17173.com/app/location/list?mapIds=4010",
+  "regions_api": "https://terra-api.17173.com/app/region/list?mapId=4010",
+  "tile_url_template": "https://ue.17173cdn.com/a/terra/tiles/rocom/4010_v3_7f2d9c/{z}/{y}_{x}.png?v1",
+  "pois_count": 3882,
+  "regions_count": 0,
+  "category_group_count": 8,
+  "category_count": 82,
+  "notes": [
+    "pois.json 是互动地图点位原始数据，可直接用于原型期的坐标验证。",
+    "tile_url_template 来自前端 bundle 里的地图初始化逻辑。",
+    "categories.json 提供点位分类与图标信息，可用于按需筛选显示。",
+    "当前脚本只验证并保存封面图、点位和区域数据，不主动穷举下载底图瓦片。"
+  ]
+}

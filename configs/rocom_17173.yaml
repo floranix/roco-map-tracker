@@ -1,0 +1,52 @@
+map_path: data/rocom_17173/rocom-shijie-z13.png
+map_projection: web_mercator_tiles
+map_tile_zoom: 13
+map_tile_x_range:
+  - 4064
+  - 4095
+map_tile_y_range:
+  - 4064
+  - 4095
+map_tile_size: 256
+frame_preprocess_mode: minimap_circle
+minimap_outer_margin: 10
+minimap_center_mask_ratio: 0.22
+minimap_icon_mask_ratio: 0.18
+minimap_icon_offset_x_ratio: -0.65
+minimap_icon_offset_y_ratio: 0.55
+global_search_scales:
+  - 1.0
+  - 0.85
+  - 0.7
+  - 0.55
+  - 0.45
+  - 0.35
+  - 0.25
+  - 1.2
+  - 1.4
+  - 1.7
+feature_type: orb
+min_match_count: 10
+roi_expand_pixels: 120
+resize_ratio: 1.0
+use_optical_flow: true
+use_kalman: true
+max_lost_frames: 10
+ratio_test: 0.75
+ransac_threshold: 5.0
+orb_nfeatures: 5000
+output_dir: outputs/rocom_17173
+save_visualizations: false
+map_bounds:
+  - -1.4
+  - 0.0
+  - 0.0
+  - 1.4
+poi_data_path: data/rocom_17173/pois.json
+poi_categories_path: data/rocom_17173/categories.json
+show_poi_overlay: false
+show_poi_labels: false
+poi_keyword: ""
+poi_category_ids: []
+poi_max_draw: 1500
+poi_label_limit: 40
