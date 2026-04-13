@@ -30,6 +30,7 @@ METHOD_LABELS = {
 @dataclass
 class AppConfig:
     map_path: str = "data/full_map.png"
+    display_map_path: str = ""
     map_projection: str = "linear"
     map_tile_zoom: int = 0
     map_tile_x_range: list[int] = field(default_factory=list)
@@ -51,6 +52,14 @@ class AppConfig:
     feature_type: str = "orb"
     min_match_count: int = 12
     roi_expand_pixels: int = 120
+    tracking_template_scales: list[float] = field(default_factory=lambda: [0.97, 1.0, 1.03])
+    tracking_template_top_per_scale: int = 1
+    tracking_template_top_k: int = 2
+    tracking_template_refine_radius: int = 180
+    tracking_template_min_score: float = 0.76
+    tracking_template_early_accept_score: float = 0.80
+    tracking_motion_gate_pixels: float = 210.0
+    tracking_motion_gate_per_lost_frame: float = 45.0
     resize_ratio: float = 1.0
     use_optical_flow: bool = True
     use_kalman: bool = True
@@ -322,25 +331,9 @@ def draw_localization(
         center = (int(round(result.x)), int(round(result.y)))
         cv2.circle(annotated_map, center, 8, (0, 0, 255), -1)
 
-    state_text = localize_state(result.state)
-    lines = [f"状态: {state_text} | 置信度={result.score:.2f} | ({result.x:.1f}, {result.y:.1f})"]
-    if extra_lines:
-        lines.extend([line for line in extra_lines if line])
-
     annotated_frame = frame_image.copy()
-    cv2.putText(
-        annotated_frame,
-        "当前帧",
-        (10, 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (0, 255, 0),
-        2,
-        cv2.LINE_AA,
-    )
 
     focus_map, overview_map = _build_focus_map_view(annotated_map, frame_image, result)
-    _draw_info_lines(focus_map, lines)
     if overview_map is not None:
         _overlay_overview_map(focus_map, overview_map)
 
@@ -392,32 +385,6 @@ def _fit_to_height(image: np.ndarray, target_height: int) -> np.ndarray:
 def _display_number(value: Optional[float]) -> str:
     rounded = _rounded_or_none(value)
     return "未知" if rounded is None else str(rounded)
-
-
-def _draw_info_lines(image: np.ndarray, lines: list[str]) -> None:
-    y = 30
-    for line in lines:
-        cv2.putText(
-            image,
-            line,
-            (20, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
-            (0, 0, 0),
-            3,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            image,
-            line,
-            (20, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.72,
-            (0, 255, 0),
-            1,
-            cv2.LINE_AA,
-        )
-        y += 28
 
 
 def _build_focus_map_view(
@@ -496,26 +463,6 @@ def _build_overview_map(
         point = (int(round(result.x * scale)), int(round(result.y * scale)))
         cv2.circle(overview, point, 4, (0, 0, 255), -1)
 
-    cv2.putText(
-        overview,
-        "总览",
-        (8, 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        overview,
-        "总览",
-        (8, 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.55,
-        (30, 30, 30),
-        1,
-        cv2.LINE_AA,
-    )
     return overview
 
 

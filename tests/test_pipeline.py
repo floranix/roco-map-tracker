@@ -143,6 +143,54 @@ class PipelineTestCase(unittest.TestCase):
         self.assertLess(abs(results[-1].y - centers[-1][1]), 20)
         self.assertGreater(results[-1].score, 0.3)
 
+    def test_repeated_frame_uses_fast_local_template_tracking(self) -> None:
+        pipeline = LocalizationPipeline(
+            AppConfig(
+                map_path=str(self.map_path),
+                feature_type="orb",
+                min_match_count=8,
+                roi_expand_pixels=60,
+                use_optical_flow=True,
+                use_kalman=False,
+                frame_preprocess_mode="minimap_circle",
+            )
+        )
+
+        source = cv2.imread(str(self.map_path))
+        frame = build_minimap_like_frame(crop_frame(source, 430, 470))
+
+        first = pipeline.process_frame(frame)
+        second = pipeline.process_frame(frame)
+
+        self.assertEqual(first.state, "relocalizing")
+        self.assertEqual(second.state, "tracking")
+        self.assertEqual(second.method, "local_template_match")
+        self.assertLess(abs(second.x - 430), 24)
+        self.assertLess(abs(second.y - 470), 24)
+        self.assertGreater(second.score, 0.3)
+
+    def test_large_jump_triggers_relocalization_instead_of_bad_local_lock(self) -> None:
+        pipeline = LocalizationPipeline(
+            AppConfig(
+                map_path=str(self.map_path),
+                feature_type="orb",
+                min_match_count=8,
+                roi_expand_pixels=60,
+                use_optical_flow=True,
+                use_kalman=False,
+            )
+        )
+
+        source = cv2.imread(str(self.map_path))
+        first = pipeline.process_frame(crop_frame(source, 330, 300))
+        second = pipeline.process_frame(crop_frame(source, 610, 580))
+
+        self.assertEqual(first.state, "relocalizing")
+        self.assertNotEqual(second.state, "lost")
+        self.assertLess(abs(second.x - 610), 24)
+        self.assertLess(abs(second.y - 580), 24)
+        self.assertIn(second.method, {"global_template_match", "global_feature_match", "global_tile_match"})
+
     def test_global_localization_with_zoomed_frame(self) -> None:
         pipeline = LocalizationPipeline(
             AppConfig(

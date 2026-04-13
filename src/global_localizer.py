@@ -153,6 +153,32 @@ class GlobalLocalizer:
 
         return best_result
 
+    def localize_template(
+        self,
+        frame_gray: np.ndarray,
+        content_mask: np.ndarray | None,
+        search_region: Optional[tuple[int, int, int, int]] = None,
+        state: str = "tracking",
+        template_scales: list[float] | None = None,
+        top_per_scale: int | None = None,
+        top_k: int | None = None,
+        refine_radius: int | None = None,
+        min_score: float | None = None,
+    ) -> Optional[LocalizationResult]:
+        if content_mask is None or not self.use_template_matching:
+            return None
+        return self._localize_with_template_matching(
+            frame_gray=frame_gray,
+            content_mask=content_mask,
+            search_region=search_region,
+            state=state,
+            template_scales=template_scales,
+            top_per_scale=top_per_scale,
+            top_k=top_k,
+            refine_radius=refine_radius,
+            min_score=min_score,
+        )
+
     def _search_global_tiles(
         self,
         frame_gray: np.ndarray,
@@ -284,7 +310,20 @@ class GlobalLocalizer:
         content_mask: np.ndarray,
         search_region: Optional[tuple[int, int, int, int]],
         state: str,
+        template_scales: list[float] | None = None,
+        top_per_scale: int | None = None,
+        top_k: int | None = None,
+        refine_radius: int | None = None,
+        min_score: float | None = None,
     ) -> Optional[LocalizationResult]:
+        active_scales = self._normalize_scales(template_scales or self.template_match_scales)
+        active_top_per_scale = max(1, int(top_per_scale or self.template_match_top_per_scale))
+        active_top_k = max(1, int(top_k or self.template_match_top_k))
+        active_refine_radius = max(64, int(refine_radius or self.template_match_refine_radius))
+        active_min_score = float(
+            np.clip(self.template_match_min_score if min_score is None else min_score, 0.0, 1.0)
+        )
+
         coarse_candidates: list[TemplateMatchCandidate]
         if search_region is None:
             coarse_candidates = self._search_template_candidates(
@@ -295,13 +334,15 @@ class GlobalLocalizer:
                 map_scale=self.template_match_map_downsample,
                 frame_gray=frame_gray,
                 content_mask=content_mask,
-                template_scales=self.template_match_scales,
-                top_per_scale=self.template_match_top_per_scale,
+                template_scales=active_scales,
+                top_per_scale=active_top_per_scale,
             )
             refined_candidates = self._refine_template_candidates(
                 frame_gray=frame_gray,
                 content_mask=content_mask,
                 coarse_candidates=coarse_candidates,
+                top_k=active_top_k,
+                refine_radius=active_refine_radius,
             )
             method = "global_template_match"
         else:
@@ -315,16 +356,16 @@ class GlobalLocalizer:
                 map_scale=1.0,
                 frame_gray=frame_gray,
                 content_mask=content_mask,
-                template_scales=self.template_match_scales,
-                top_per_scale=self.template_match_top_per_scale,
+                template_scales=active_scales,
+                top_per_scale=active_top_per_scale,
             )
             method = "local_template_match"
 
         best_result: Optional[LocalizationResult] = None
-        for candidate in refined_candidates[: self.template_match_top_k]:
+        for candidate in refined_candidates[:active_top_k]:
             homography = self._template_candidate_homography(candidate)
             verification_score = self._verify_candidate(frame_gray, content_mask, homography)
-            if verification_score is not None and verification_score < self.template_match_min_score * 0.75:
+            if verification_score is not None and verification_score < active_min_score * 0.75:
                 continue
             result = self._try_build_result(
                 frame_gray=frame_gray,
@@ -340,7 +381,7 @@ class GlobalLocalizer:
 
         if best_result is None:
             return None
-        if best_result.score < self.template_match_min_score:
+        if best_result.score < active_min_score:
             return None
         return best_result
 
@@ -349,14 +390,16 @@ class GlobalLocalizer:
         frame_gray: np.ndarray,
         content_mask: np.ndarray,
         coarse_candidates: list[TemplateMatchCandidate],
+        top_k: int,
+        refine_radius: int,
     ) -> list[TemplateMatchCandidate]:
         refined: list[TemplateMatchCandidate] = []
         height, width = self.map_gray.shape[:2]
-        for coarse_candidate in coarse_candidates[: self.template_match_top_k]:
+        for coarse_candidate in coarse_candidates[:top_k]:
             center_x = coarse_candidate.x0 + coarse_candidate.width // 2
             center_y = coarse_candidate.y0 + coarse_candidate.height // 2
             half_window = max(
-                self.template_match_refine_radius,
+                refine_radius,
                 int(round(max(coarse_candidate.width, coarse_candidate.height) * 1.25)),
             )
             x0 = max(0, center_x - half_window)
@@ -391,7 +434,7 @@ class GlobalLocalizer:
             )
 
         refined.sort(key=lambda candidate: candidate.score, reverse=True)
-        return self._deduplicate_template_candidates(refined)
+        return self._deduplicate_template_candidates(refined, limit=top_k)
 
     def _search_template_candidates(
         self,
@@ -506,8 +549,10 @@ class GlobalLocalizer:
     def _deduplicate_template_candidates(
         self,
         candidates: list[TemplateMatchCandidate],
+        limit: int | None = None,
     ) -> list[TemplateMatchCandidate]:
         deduplicated: list[TemplateMatchCandidate] = []
+        active_limit = self.template_match_top_k if limit is None else max(1, int(limit))
         for candidate in candidates:
             candidate_center = (
                 candidate.x0 + candidate.width * 0.5,
@@ -526,7 +571,7 @@ class GlobalLocalizer:
                     break
             if not is_duplicate:
                 deduplicated.append(candidate)
-            if len(deduplicated) >= self.template_match_top_k:
+            if len(deduplicated) >= active_limit:
                 break
         return deduplicated
 

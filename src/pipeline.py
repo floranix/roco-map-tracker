@@ -42,6 +42,8 @@ class LocalizationPipeline:
             roi_expand_pixels=config.roi_expand_pixels,
             max_lost_frames=config.max_lost_frames,
             use_optical_flow=config.use_optical_flow,
+            motion_gate_pixels=config.tracking_motion_gate_pixels,
+            motion_gate_per_lost_frame=config.tracking_motion_gate_per_lost_frame,
         )
         self.kalman = PositionKalmanFilter() if config.use_kalman else None
 
@@ -52,6 +54,25 @@ class LocalizationPipeline:
 
         result = None
         if search_region is not None:
+            fast_template_result = self.localizer.localize_template(
+                frame_gray=frame_gray,
+                content_mask=prepared_frame.content_mask,
+                search_region=search_region,
+                state="tracking",
+                template_scales=self.config.tracking_template_scales,
+                top_per_scale=self.config.tracking_template_top_per_scale,
+                top_k=self.config.tracking_template_top_k,
+                refine_radius=self.config.tracking_template_refine_radius,
+                min_score=self.config.tracking_template_min_score,
+            )
+            if (
+                fast_template_result is not None
+                and fast_template_result.score >= self.config.tracking_template_early_accept_score
+                and self.tracker.is_result_plausible(fast_template_result, frame_gray.shape, strict=True)
+            ):
+                result = fast_template_result
+
+        if result is None and search_region is not None:
             result = self.localizer.localize(
                 frame_gray,
                 frame_mask=prepared_frame.feature_mask,
@@ -59,6 +80,8 @@ class LocalizationPipeline:
                 search_region=search_region,
                 state="tracking",
             )
+            if result is not None and not self.tracker.is_result_plausible(result, frame_gray.shape, strict=True):
+                result = None
 
         if result is None:
             result = self.localizer.localize(

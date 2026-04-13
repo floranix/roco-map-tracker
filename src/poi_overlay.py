@@ -89,6 +89,8 @@ class PoiOverlay:
         self.pixel_scale = float(pixel_scale)
         self.pixel_offset_x = float(pixel_offset_x)
         self.pixel_offset_y = float(pixel_offset_y)
+        self.render_scale_x = 1.0
+        self.render_scale_y = 1.0
         self.records = self._load_records(self.pois_path)
         self.categories = self._load_categories(self.categories_path) if self.categories_path else {}
         self._icon_cache: dict[str, np.ndarray | None] = {}
@@ -192,8 +194,8 @@ class PoiOverlay:
             return self._project_web_mercator_point(longitude, latitude, image_width, image_height)
 
         if self.projection_type == "pixel_space":
-            x = int(round(longitude * self.pixel_scale + self.pixel_offset_x))
-            y = int(round(latitude * self.pixel_scale + self.pixel_offset_y))
+            x = int(round((longitude * self.pixel_scale + self.pixel_offset_x) * self.render_scale_x))
+            y = int(round((latitude * self.pixel_scale + self.pixel_offset_y) * self.render_scale_y))
             if x < 0 or y < 0 or x >= image_width or y >= image_height:
                 return None
             return x, y
@@ -233,7 +235,12 @@ class PoiOverlay:
 
         x_pixel = (self._lon_to_tile_x(longitude, self.tile_zoom) - x_min) * self.tile_size
         y_pixel = (self._lat_to_tile_y(latitude, self.tile_zoom) - y_min) * self.tile_size
-        return self._clamp_pixel_point(x_pixel, y_pixel, image_width, image_height)
+        return self._clamp_pixel_point(
+            x_pixel * self.render_scale_x,
+            y_pixel * self.render_scale_y,
+            image_width,
+            image_height,
+        )
 
     @staticmethod
     def _clamp_pixel_point(
@@ -310,28 +317,8 @@ class PoiOverlay:
         point: tuple[int, int],
         category_id: int,
     ) -> None:
-        color = self._category_color(category_id)
-        label_point = (point[0] + 8, point[1] - 8)
-        cv2.putText(
-            image,
-            text,
-            label_point,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (0, 0, 0),
-            3,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            image,
-            text,
-            label_point,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            color,
-            1,
-            cv2.LINE_AA,
-        )
+        # OpenCV's default font renders Chinese poorly, so map labels are suppressed.
+        return
 
     def _category_color(self, category_id: int) -> tuple[int, int, int]:
         if category_id <= 0:
