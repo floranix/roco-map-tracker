@@ -52,8 +52,6 @@ class GlobalLocalizer:
         template_match_refine_radius: int = 420,
         template_match_min_score: float = 0.72,
         template_match_blur_size: int = 7,
-        template_color_validation_weight: float = 0.35,
-        template_color_validation_min_score: float = 0.52,
     ) -> None:
         self.map_gray = map_gray
         self.matcher = matcher
@@ -73,8 +71,6 @@ class GlobalLocalizer:
         self.template_match_refine_radius = max(64, int(template_match_refine_radius))
         self.template_match_min_score = float(np.clip(template_match_min_score, 0.0, 1.0))
         self.template_match_blur_size = self._normalize_blur_size(template_match_blur_size)
-        self.template_color_validation_weight = float(np.clip(template_color_validation_weight, 0.0, 1.0))
-        self.template_color_validation_min_score = float(np.clip(template_color_validation_min_score, 0.0, 1.0))
         self.map_keypoints, self.map_descriptors = matcher.detect_and_compute(map_gray)
         self.global_tiles = self._build_global_tiles()
         self.map_gray_blurred = cv2.GaussianBlur(
@@ -330,16 +326,12 @@ class GlobalLocalizer:
             verification_score = self._verify_candidate(frame_gray, content_mask, homography)
             if verification_score is not None and verification_score < self.template_match_min_score * 0.75:
                 continue
-            color_score = self._verify_template_color_regions(frame_gray, content_mask, homography)
-            if color_score is not None and color_score < self.template_color_validation_min_score:
-                continue
-            blended_feature_score = self._blend_template_scores(candidate.score, color_score)
             result = self._try_build_result(
                 frame_gray=frame_gray,
                 homography=homography,
                 match_count=0,
                 inlier_count=0,
-                feature_score=blended_feature_score,
+                feature_score=candidate.score,
                 verification_score=verification_score,
                 state=state,
                 method=method,
@@ -749,14 +741,6 @@ class GlobalLocalizer:
             + self.candidate_verification_weight * verification_score
         )
 
-    def _blend_template_scores(self, template_score: float, color_score: float | None) -> float:
-        if color_score is None:
-            return float(template_score)
-        return float(
-            (1.0 - self.template_color_validation_weight) * template_score
-            + self.template_color_validation_weight * color_score
-        )
-
     def _verify_candidate(
         self,
         frame_gray: np.ndarray,
@@ -783,71 +767,6 @@ class GlobalLocalizer:
         intensity_score = self._masked_intensity_similarity(frame_gray, aligned_map, comparison_mask)
         edge_score = self._masked_edge_similarity(frame_gray, aligned_map, comparison_mask)
         return float(np.clip(0.6 * intensity_score + 0.4 * edge_score, 0.0, 1.0))
-
-    def _verify_template_color_regions(
-        self,
-        frame_gray: np.ndarray,
-        content_mask: np.ndarray | None,
-        homography: np.ndarray,
-    ) -> float | None:
-        comparison_mask = self._comparison_mask(frame_gray, content_mask, homography)
-        if comparison_mask is None or np.count_nonzero(comparison_mask) < 256:
-            return None
-
-        try:
-            inverse_homography = np.linalg.inv(homography)
-        except np.linalg.LinAlgError:
-            return None
-
-        aligned_map = cv2.warpPerspective(
-            self.map_gray,
-            inverse_homography,
-            (frame_gray.shape[1], frame_gray.shape[0]),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0,
-        )
-
-        frame_bins = self._quantize_region_map(frame_gray, comparison_mask)
-        map_bins = self._quantize_region_map(aligned_map, comparison_mask)
-        valid = comparison_mask > 0
-        if int(valid.sum()) < 256:
-            return None
-
-        total = int(valid.sum())
-        score = 0.0
-        for label in range(4):
-            frame_region = frame_bins == label
-            map_region = map_bins == label
-            overlap = int(np.count_nonzero(frame_region & map_region & valid))
-            union = int(np.count_nonzero((frame_region | map_region) & valid))
-            if union == 0:
-                score += 0.25
-            else:
-                score += 0.25 * (overlap / union)
-
-        frame_gradient = cv2.Laplacian(frame_gray, cv2.CV_32F, ksize=3)
-        map_gradient = cv2.Laplacian(aligned_map, cv2.CV_32F, ksize=3)
-        gradient_delta = np.abs(frame_gradient[valid] - map_gradient[valid]).mean() / 255.0
-        gradient_score = float(np.clip(1.0 - gradient_delta, 0.0, 1.0))
-        return float(np.clip(0.7 * score + 0.3 * gradient_score, 0.0, 1.0))
-
-    @staticmethod
-    def _quantize_region_map(image_gray: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        blurred = cv2.GaussianBlur(image_gray, (5, 5), 0)
-        valid_values = blurred[mask > 0]
-        if valid_values.size < 64:
-            return np.zeros_like(blurred, dtype=np.uint8)
-
-        q20 = int(np.quantile(valid_values, 0.2))
-        q45 = int(np.quantile(valid_values, 0.45))
-        q75 = int(np.quantile(valid_values, 0.75))
-        bins = np.zeros_like(blurred, dtype=np.uint8)
-        bins[blurred > q20] = 1
-        bins[blurred > q45] = 2
-        bins[blurred > q75] = 3
-        bins[mask == 0] = 0
-        return bins
 
     def _comparison_mask(
         self,

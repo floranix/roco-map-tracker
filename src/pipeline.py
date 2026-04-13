@@ -37,8 +37,6 @@ class LocalizationPipeline:
             template_match_refine_radius=config.template_match_refine_radius,
             template_match_min_score=config.template_match_min_score,
             template_match_blur_size=config.template_match_blur_size,
-            template_color_validation_weight=config.template_color_validation_weight,
-            template_color_validation_min_score=config.template_color_validation_min_score,
         )
         self.tracker = LocalTracker(
             roi_expand_pixels=config.roi_expand_pixels,

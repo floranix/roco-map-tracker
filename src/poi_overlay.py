@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import math
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
@@ -24,11 +27,14 @@ class PoiCategory:
 
 @dataclass
 class PoiRecord:
-    id: int
+    id: str
     title: str
     category_id: int
     longitude: float
     latitude: float
+    icon_key: str = ""
+    icon_source: str = ""
+    category_title: str = ""
 
 
 @dataclass
@@ -61,22 +67,32 @@ class PoiOverlay:
         pois_path: str | Path,
         map_bounds: tuple[float, float, float, float],
         categories_path: str | Path | None = None,
+        icon_dir: str | Path | None = None,
         projection_type: str = "linear",
         tile_zoom: int = 0,
         tile_x_range: tuple[int, int] | None = None,
         tile_y_range: tuple[int, int] | None = None,
         tile_size: int = 256,
+        pixel_scale: float = 1.0,
+        pixel_offset_x: float = 0.0,
+        pixel_offset_y: float = 0.0,
     ) -> None:
         self.pois_path = Path(pois_path)
         self.map_bounds = map_bounds
         self.categories_path = Path(categories_path) if categories_path else None
+        self.icon_dir = Path(icon_dir).expanduser() if icon_dir else None
         self.projection_type = projection_type
         self.tile_zoom = tile_zoom
         self.tile_x_range = tile_x_range
         self.tile_y_range = tile_y_range
         self.tile_size = tile_size
+        self.pixel_scale = float(pixel_scale)
+        self.pixel_offset_x = float(pixel_offset_x)
+        self.pixel_offset_y = float(pixel_offset_y)
         self.records = self._load_records(self.pois_path)
         self.categories = self._load_categories(self.categories_path) if self.categories_path else {}
+        self._icon_cache: dict[str, np.ndarray | None] = {}
+        self._remote_icon_cache_dir = self.pois_path.parent / ".icon_cache"
 
     def available_categories(self) -> list[tuple[PoiCategory, int]]:
         counts = {}
@@ -87,9 +103,17 @@ class PoiOverlay:
         for category_id, count in counts.items():
             category = self.categories.get(category_id)
             if category is None:
+                fallback_title = next(
+                    (
+                        record.category_title
+                        for record in self.records
+                        if record.category_id == category_id and record.category_title
+                    ),
+                    f"分类 {category_id}",
+                )
                 category = PoiCategory(
                     id=category_id,
-                    title=f"分类 {category_id}",
+                    title=fallback_title,
                     group_id=0,
                     group_title="未分组",
                 )
@@ -141,7 +165,7 @@ class PoiOverlay:
             if point is None:
                 continue
             points.append((record, point))
-            self._draw_marker(canvas, record.category_id, point)
+            self._draw_marker(canvas, record, point)
 
         if options.show_labels and points:
             for record, point in self._pick_label_records(points, focus_xy, options.label_limit):
@@ -166,6 +190,13 @@ class PoiOverlay:
 
         if self.projection_type == "web_mercator_tiles":
             return self._project_web_mercator_point(longitude, latitude, image_width, image_height)
+
+        if self.projection_type == "pixel_space":
+            x = int(round(longitude * self.pixel_scale + self.pixel_offset_x))
+            y = int(round(latitude * self.pixel_scale + self.pixel_offset_y))
+            if x < 0 or y < 0 or x >= image_width or y >= image_height:
+                return None
+            return x, y
 
         min_lon, min_lat, max_lon, max_lat = self.map_bounds
         if max_lon <= min_lon or max_lat <= min_lat:
@@ -262,8 +293,13 @@ class PoiOverlay:
         )
         return ranked[:label_limit]
 
-    def _draw_marker(self, image: np.ndarray, category_id: int, point: tuple[int, int]) -> None:
-        color = self._category_color(category_id)
+    def _draw_marker(self, image: np.ndarray, record: PoiRecord, point: tuple[int, int]) -> None:
+        icon = self._load_icon(record)
+        if icon is not None:
+            self._overlay_icon(image, icon, point)
+            return
+
+        color = self._category_color(record.category_id)
         cv2.circle(image, point, 5, (0, 0, 0), -1, cv2.LINE_AA)
         cv2.circle(image, point, 4, color, -1, cv2.LINE_AA)
 
@@ -306,19 +342,139 @@ class PoiOverlay:
             50 + (category_id * 97) % 180,
         )
 
+    def _load_icon(self, record: PoiRecord) -> np.ndarray | None:
+        category = self.categories.get(record.category_id)
+        icon_key = record.icon_key or str(record.category_id)
+        icon_value = record.icon_source or (category.icon if category else "")
+        cache_key = f"{icon_key}|{icon_value}|{self.icon_dir or ''}"
+        if cache_key in self._icon_cache:
+            return self._icon_cache[cache_key]
+
+        icon = self._load_icon_from_dir(icon_key)
+        if icon is None and icon_value:
+            icon = self._load_icon_value(icon_value, icon_key)
+
+        self._icon_cache[cache_key] = icon
+        return icon
+
+    def _load_icon_from_dir(self, icon_key: str) -> np.ndarray | None:
+        if self.icon_dir is None or not self.icon_dir.exists():
+            return None
+
+        candidates = sorted(self.icon_dir.glob(f"{icon_key}.*"))
+        candidates.extend(sorted(self.icon_dir.glob(f"{icon_key}_*.*")))
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return self._read_icon(candidate)
+        return None
+
+    def _load_icon_value(self, icon_value: str, icon_key: str) -> np.ndarray | None:
+        icon_value = str(icon_value).strip()
+        if not icon_value:
+            return None
+
+        local_candidate = Path(icon_value).expanduser()
+        if local_candidate.exists():
+            return self._read_icon(local_candidate)
+
+        parsed = urlparse(icon_value)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+
+        self._remote_icon_cache_dir.mkdir(parents=True, exist_ok=True)
+        suffix = Path(parsed.path).suffix or ".png"
+        cache_name = f"{icon_key}_{hashlib.sha1(icon_value.encode('utf-8')).hexdigest()[:12]}{suffix}"
+        cache_path = self._remote_icon_cache_dir / cache_name
+        if not cache_path.exists():
+            request = Request(icon_value, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(request, timeout=15) as response:
+                cache_path.write_bytes(response.read())
+        return self._read_icon(cache_path)
+
+    @staticmethod
+    def _read_icon(path: Path) -> np.ndarray | None:
+        icon = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if icon is None:
+            return None
+        if icon.ndim == 2:
+            icon = cv2.cvtColor(icon, cv2.COLOR_GRAY2BGRA)
+        elif icon.shape[2] == 3:
+            alpha = np.full(icon.shape[:2], 255, dtype=np.uint8)
+            icon = np.dstack([icon, alpha])
+        return icon
+
+    @staticmethod
+    def _overlay_icon(image: np.ndarray, icon: np.ndarray, point: tuple[int, int]) -> None:
+        max_edge = 20
+        height, width = icon.shape[:2]
+        scale = min(1.0, max_edge / max(height, width, 1))
+        if scale != 1.0:
+            icon = cv2.resize(
+                icon,
+                (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+                interpolation=cv2.INTER_AREA,
+            )
+            height, width = icon.shape[:2]
+
+        x0 = int(round(point[0] - width / 2))
+        y0 = int(round(point[1] - height / 2))
+        x1 = x0 + width
+        y1 = y0 + height
+        clip_x0 = max(0, x0)
+        clip_y0 = max(0, y0)
+        clip_x1 = min(image.shape[1], x1)
+        clip_y1 = min(image.shape[0], y1)
+        if clip_x0 >= clip_x1 or clip_y0 >= clip_y1:
+            return
+
+        icon_x0 = clip_x0 - x0
+        icon_y0 = clip_y0 - y0
+        icon_x1 = icon_x0 + (clip_x1 - clip_x0)
+        icon_y1 = icon_y0 + (clip_y1 - clip_y0)
+
+        icon_patch = icon[icon_y0:icon_y1, icon_x0:icon_x1]
+        alpha = icon_patch[:, :, 3:4].astype(np.float32) / 255.0
+        if np.count_nonzero(alpha) == 0:
+            return
+
+        image_patch = image[clip_y0:clip_y1, clip_x0:clip_x1].astype(np.float32)
+        blended = alpha * icon_patch[:, :, :3].astype(np.float32) + (1.0 - alpha) * image_patch
+        image[clip_y0:clip_y1, clip_x0:clip_x1] = blended.astype(np.uint8)
+
     @staticmethod
     def _load_records(path: Path) -> list[PoiRecord]:
         payload = json.loads(path.read_text(encoding="utf-8"))
         raw_records = payload["data"] if isinstance(payload, dict) and "data" in payload else payload
         records = []
         for raw in raw_records:
+            if "point" in raw and isinstance(raw.get("point"), dict):
+                point = raw["point"]
+                mark_type = int(raw.get("markType") or raw.get("category_id") or 0)
+                mark_title = str(raw.get("markTypeName") or "").strip()
+                title = str(raw.get("title") or mark_title or f"类型 {mark_type}")
+                records.append(
+                    PoiRecord(
+                        id=str(raw.get("id") or len(records) + 1),
+                        title=title,
+                        category_id=mark_type,
+                        longitude=float(point.get("lng") or 0.0),
+                        latitude=float(point.get("lat") or 0.0),
+                        icon_key=str(mark_type) if mark_type else "",
+                        icon_source=str(raw.get("iconUrl") or raw.get("icon") or ""),
+                        category_title=mark_title,
+                    )
+                )
+                continue
             records.append(
                 PoiRecord(
-                    id=int(raw["id"]),
+                    id=str(raw.get("id") or len(records) + 1),
                     title=str(raw.get("title") or ""),
                     category_id=int(raw.get("category_id") or 0),
                     longitude=float(raw["longitude"]),
                     latitude=float(raw["latitude"]),
+                    icon_key=str(raw.get("category_id") or 0),
+                    icon_source="",
+                    category_title="",
                 )
             )
         return records

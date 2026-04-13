@@ -10,6 +10,7 @@ import cv2
 
 from src.pipeline import LocalizationPipeline
 from src.poi_overlay import PoiOverlay, PoiRenderOptions
+from src.screen_pick import format_capture_region, iterate_screen_region_frames, parse_capture_region, pick_screen_region
 from src.utils import (
     AppConfig,
     apply_map_metadata_defaults,
@@ -65,6 +66,7 @@ class LocalizationGUI:
         self.poi_keyword_var = tk.StringVar(value="")
         self.poi_summary_var = tk.StringVar(value="未加载点位数据")
         self.status_var = tk.StringVar(value="就绪")
+        self.capture_interval_var = tk.StringVar(value="250")
 
         self.preview_label = None
         self.log_text = None
@@ -112,13 +114,16 @@ class LocalizationGUI:
         ttk.Label(controls, text="输入源").grid(row=3, column=0, sticky="w", pady=(8, 0))
         input_row = ttk.Frame(controls)
         input_row.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
-        input_row.columnconfigure(3, weight=1)
+        input_row.columnconfigure(4, weight=1)
 
         ttk.Radiobutton(input_row, text="单张截图", value="frame", variable=self.input_mode_var).grid(row=0, column=0, padx=(0, 8))
         ttk.Radiobutton(input_row, text="截图文件夹", value="frames_dir", variable=self.input_mode_var).grid(row=0, column=1, padx=(0, 8))
         ttk.Radiobutton(input_row, text="视频", value="video", variable=self.input_mode_var).grid(row=0, column=2, padx=(0, 8))
-        ttk.Entry(input_row, textvariable=self.input_path_var).grid(row=0, column=3, sticky="ew", padx=(0, 8))
-        ttk.Button(input_row, text="选择", command=self._select_input).grid(row=0, column=4)
+        ttk.Radiobutton(input_row, text="屏幕区域", value="screen_region", variable=self.input_mode_var).grid(row=0, column=3, padx=(0, 8))
+        ttk.Entry(input_row, textvariable=self.input_path_var).grid(row=0, column=4, sticky="ew", padx=(0, 8))
+        ttk.Button(input_row, text="选择", command=self._select_input).grid(row=0, column=5)
+        ttk.Label(input_row, text="间隔(ms)").grid(row=0, column=6, padx=(8, 4))
+        ttk.Entry(input_row, width=8, textvariable=self.capture_interval_var).grid(row=0, column=7)
 
         ttk.Label(controls, text="输出目录").grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Entry(controls, textvariable=self.output_dir_var).grid(row=4, column=1, sticky="ew", padx=8, pady=(8, 0))
@@ -200,6 +205,10 @@ class LocalizationGUI:
         self.show_poi_overlay_var.set(config.show_poi_overlay)
         self.show_poi_labels_var.set(config.show_poi_labels)
         self.poi_keyword_var.set(config.poi_keyword)
+        self.capture_interval_var.set(str(config.capture_interval_ms))
+        if config.capture_region:
+            self.input_mode_var.set("screen_region")
+            self.input_path_var.set(format_capture_region(config.capture_region))
         self._load_poi_catalog()
         self._apply_category_selection(config.poi_category_ids)
         self.status_var.set("配置已载入")
@@ -237,6 +246,22 @@ class LocalizationGUI:
             )
         elif mode == "frames_dir":
             selected = filedialog.askdirectory(title="选择截图文件夹")
+        elif mode == "screen_region":
+            self.status_var.set("请框选需要持续采集的矩形区域")
+
+            def on_done(region: tuple[int, int, int, int]) -> None:
+                self.input_path_var.set(format_capture_region(region))
+                self.status_var.set("屏幕区域已选定")
+
+            def on_cancel() -> None:
+                self.status_var.set("已取消区域选择")
+
+            try:
+                pick_screen_region(self.root, on_done=on_done, on_cancel=on_cancel)
+            except Exception as exc:
+                messagebox.showerror("区域选择失败", str(exc))
+                self.status_var.set("区域选择失败")
+            return
         else:
             selected = filedialog.askopenfilename(
                 title="选择视频文件",
@@ -388,6 +413,9 @@ class LocalizationGUI:
         config.show_poi_overlay = self.show_poi_overlay_var.get()
         config.show_poi_labels = self.show_poi_labels_var.get()
         config.poi_keyword = self.poi_keyword_var.get().strip()
+        config.capture_interval_ms = max(0, int(self.capture_interval_var.get().strip() or "250"))
+        if self.input_mode_var.get() == "screen_region":
+            config.capture_region = list(parse_capture_region(input_path))
         return apply_map_metadata_defaults(config)
 
     def _iterate_inputs(self, input_mode: str, input_path: str):
@@ -399,6 +427,14 @@ class LocalizationGUI:
         if input_mode == "frames_dir":
             for image_path in list_image_files(input_path):
                 yield image_path.stem, load_image(image_path)
+            return
+
+        if input_mode == "screen_region":
+            yield from iterate_screen_region_frames(
+                input_path,
+                interval_ms=max(0, int(self.capture_interval_var.get().strip() or "250")),
+                stop_event=self._stop_event,
+            )
             return
 
         capture = cv2.VideoCapture(input_path)
@@ -451,18 +487,13 @@ class LocalizationGUI:
             self.poi_summary_var.set("未加载点位数据")
             return
 
-        categories_path = guess_poi_categories_path(poi_path)
-        bounds = self._guess_map_bounds()
-        if bounds is None:
+        config = self._build_overlay_config_for_catalog(poi_path)
+        if config is None:
             self.poi_summary_var.set("缺少地图边界，无法映射点位")
             return
 
         try:
-            self._poi_overlay = PoiOverlay(
-                pois_path=poi_path,
-                categories_path=categories_path or None,
-                map_bounds=bounds,
-            )
+            self._poi_overlay = self._build_overlay_from_config(config)
         except Exception as exc:
             self._poi_overlay = None
             self._poi_categories = []
@@ -502,35 +533,53 @@ class LocalizationGUI:
         return selected_ids
 
     def _build_overlay_for_run(self, config: AppConfig) -> PoiOverlay | None:
-        if not config.poi_data_path or not config.map_bounds or len(config.map_bounds) != 4:
+        return self._build_overlay_from_config(config)
+
+    def _build_overlay_config_for_catalog(self, poi_path: str) -> AppConfig | None:
+        config_path = self.config_path_var.get().strip()
+        config = AppConfig()
+        if config_path and Path(config_path).exists():
+            try:
+                config = load_config(config_path)
+            except Exception:
+                config = AppConfig()
+
+        config.poi_data_path = poi_path
+        config.poi_categories_path = guess_poi_categories_path(poi_path, config.poi_categories_path)
+        config = apply_map_metadata_defaults(config)
+        if config.map_projection == "linear" and len(config.map_bounds) != 4:
+            metadata = load_map_metadata_from_poi_data(poi_path)
+            bounds = metadata.get("bounds") if isinstance(metadata, dict) else None
+            if isinstance(bounds, list) and len(bounds) == 4:
+                config.map_bounds = [float(value) for value in bounds]
+        if config.map_projection == "linear" and len(config.map_bounds) != 4:
             return None
+        return config
+
+    def _build_overlay_from_config(self, config: AppConfig) -> PoiOverlay | None:
+        if not config.poi_data_path:
+            return None
+        if config.map_projection == "linear" and len(config.map_bounds) != 4:
+            return None
+        map_bounds = (
+            tuple(float(value) for value in config.map_bounds)
+            if len(config.map_bounds) == 4
+            else (0.0, 0.0, 1.0, 1.0)
+        )
         return PoiOverlay(
             pois_path=config.poi_data_path,
             categories_path=guess_poi_categories_path(config.poi_data_path, config.poi_categories_path) or None,
-            map_bounds=tuple(float(value) for value in config.map_bounds),
+            map_bounds=map_bounds,
+            icon_dir=config.poi_icon_dir or None,
             projection_type=config.map_projection,
             tile_zoom=config.map_tile_zoom,
             tile_x_range=tuple(config.map_tile_x_range) if len(config.map_tile_x_range) == 2 else None,
             tile_y_range=tuple(config.map_tile_y_range) if len(config.map_tile_y_range) == 2 else None,
             tile_size=config.map_tile_size,
+            pixel_scale=config.poi_pixel_scale,
+            pixel_offset_x=config.poi_pixel_offset_x,
+            pixel_offset_y=config.poi_pixel_offset_y,
         )
-
-    def _guess_map_bounds(self) -> tuple[float, float, float, float] | None:
-        config_path = self.config_path_var.get().strip()
-        if config_path and Path(config_path).exists():
-            try:
-                config = load_config(config_path)
-                if config.map_bounds and len(config.map_bounds) == 4:
-                    return tuple(float(value) for value in config.map_bounds)
-            except Exception:
-                pass
-        poi_path = self.poi_data_path_var.get().strip()
-        if poi_path:
-            metadata = load_map_metadata_from_poi_data(poi_path)
-            bounds = metadata.get("bounds") if isinstance(metadata, dict) else None
-            if isinstance(bounds, list) and len(bounds) == 4:
-                return tuple(float(value) for value in bounds)
-        return None
 
 
 def launch_gui() -> None:

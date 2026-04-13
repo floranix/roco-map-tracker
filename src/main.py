@@ -13,6 +13,7 @@ if __package__ in {None, ""}:
 from src.pipeline import LocalizationPipeline
 from src.gui import launch_gui
 from src.poi_overlay import PoiOverlay, PoiRenderOptions
+from src.screen_pick import iterate_screen_region_frames, parse_capture_region
 from src.utils import (
     apply_map_metadata_defaults,
     draw_localization,
@@ -35,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frame", help="单张局部截图路径")
     parser.add_argument("--frames-dir", help="连续截图文件夹路径")
     parser.add_argument("--video", help="视频文件路径")
+    parser.add_argument("--screen-region", help="屏幕采集区域，格式为 x,y,w,h")
+    parser.add_argument("--capture-interval-ms", type=int, help="屏幕区域采集间隔（毫秒）")
     parser.add_argument("--output-dir", help="可视化结果输出目录")
     parser.add_argument("--save-visualizations", action="store_true", help="保存可视化结果")
     parser.add_argument("--visualize", action="store_true", help="显示定位窗口")
@@ -52,7 +55,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.gui or not any([args.frame, args.frames_dir, args.video]):
+    if args.gui or not any([args.frame, args.frames_dir, args.video, args.screen_region]):
         launch_gui()
         return 0
 
@@ -75,6 +78,10 @@ def main() -> int:
         config.poi_keyword = args.poi_keyword
     if args.poi_category_ids:
         config.poi_category_ids = parse_category_ids(args.poi_category_ids)
+    if args.screen_region:
+        config.capture_region = list(parse_capture_region(args.screen_region))
+    if args.capture_interval_ms is not None:
+        config.capture_interval_ms = max(0, int(args.capture_interval_ms))
     config.poi_categories_path = guess_poi_categories_path(config.poi_data_path, config.poi_categories_path)
     config = apply_map_metadata_defaults(config)
 
@@ -82,7 +89,7 @@ def main() -> int:
     output_dir = ensure_directory(config.output_dir) if (config.save_visualizations or args.visualize) else None
     poi_overlay = build_poi_overlay(config)
 
-    for frame_name, frame in iterate_frames(args):
+    for frame_name, frame in iterate_frames(args, config):
         result = pipeline.process_frame(frame)
         print(result_json(frame_name, result))
 
@@ -109,7 +116,7 @@ def main() -> int:
                 cv2.imwrite(str(output_path), visualization)
             if args.visualize:
                 cv2.imshow("定位结果", visualization)
-                if cv2.waitKey(1 if args.video else 0) & 0xFF == ord("q"):
+                if cv2.waitKey(1 if (args.video or args.screen_region) else 0) & 0xFF == ord("q"):
                     break
 
     if args.visualize:
@@ -117,7 +124,7 @@ def main() -> int:
     return 0
 
 
-def iterate_frames(args):
+def iterate_frames(args, config):
     if args.frame:
         frame_path = Path(args.frame)
         yield frame_path.stem, load_image(frame_path)
@@ -126,6 +133,13 @@ def iterate_frames(args):
     if args.frames_dir:
         for image_path in list_image_files(args.frames_dir):
             yield image_path.stem, load_image(image_path)
+        return
+
+    if args.screen_region:
+        yield from iterate_screen_region_frames(
+            config.capture_region or args.screen_region,
+            interval_ms=config.capture_interval_ms,
+        )
         return
 
     capture = cv2.VideoCapture(args.video)
@@ -145,17 +159,29 @@ def iterate_frames(args):
 
 
 def build_poi_overlay(config):
-    if not config.poi_data_path or not config.map_bounds or len(config.map_bounds) != 4:
+    if not config.poi_data_path:
         return None
+    if config.map_projection == "linear" and len(config.map_bounds) != 4:
+        return None
+
+    map_bounds = (
+        tuple(float(value) for value in config.map_bounds)
+        if len(config.map_bounds) == 4
+        else (0.0, 0.0, 1.0, 1.0)
+    )
     return PoiOverlay(
         pois_path=config.poi_data_path,
         categories_path=guess_poi_categories_path(config.poi_data_path, config.poi_categories_path) or None,
-        map_bounds=tuple(float(value) for value in config.map_bounds),
+        map_bounds=map_bounds,
+        icon_dir=config.poi_icon_dir or None,
         projection_type=config.map_projection,
         tile_zoom=config.map_tile_zoom,
         tile_x_range=tuple(config.map_tile_x_range) if len(config.map_tile_x_range) == 2 else None,
         tile_y_range=tuple(config.map_tile_y_range) if len(config.map_tile_y_range) == 2 else None,
         tile_size=config.map_tile_size,
+        pixel_scale=config.poi_pixel_scale,
+        pixel_offset_x=config.poi_pixel_offset_x,
+        pixel_offset_y=config.poi_pixel_offset_y,
     )
 
 

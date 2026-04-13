@@ -206,10 +206,18 @@ python main.py --gui
 
 在 macOS 上也可以直接双击根目录下的 `launch_gui.command` 启动图形界面。
 
+GUI 现已支持把输入源切换到“屏幕区域”，先框选一个矩形区域，再以较短时间间隔持续抓取该区域并实时定位。
+
 如果需要命令行模式，可以使用：
 
 ```bash
 python main.py --frame data/samples/frame.png --map data/full_map.png --save-visualizations
+```
+
+如果想直接做持续屏幕采集，可以使用：
+
+```bash
+python main.py --config configs/rocom_17173.yaml --screen-region 1800,260,220,220 --capture-interval-ms 150 --visualize
 ```
 
 如果要直接使用已经接入好的洛克王国世界整图与点位数据，可以运行：
@@ -245,6 +253,7 @@ python scripts/fetch_rocom_17173.py
 - 可以配合“关键词”进一步筛选点位名称
 - “显示名称”默认关闭，避免整图文字过密
 - 未选择分类时，程序不会在地图上绘制任何点位
+- 当分类或点位记录里带有网站 icon 时，会优先按 icon 绘制；只有缺 icon 时才回退到圆点标记
 
 这样可以把整图继续作为定位底图使用，同时把点位图层当作可开关的规划参考层。
 

@@ -28,7 +28,5 @@ template_match_top_k: 6
 template_match_refine_radius: 420
 template_match_min_score: 0.72
 template_match_blur_size: 7
-template_color_validation_weight: 0.0
-template_color_validation_min_score: 0.0
 output_dir: outputs
 save_visualizations: false

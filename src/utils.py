@@ -70,19 +70,23 @@ class AppConfig:
     template_match_refine_radius: int = 420
     template_match_min_score: float = 0.72
     template_match_blur_size: int = 7
-    template_color_validation_weight: float = 0.0
-    template_color_validation_min_score: float = 0.0
     output_dir: str = "outputs"
     save_visualizations: bool = False
     map_bounds: list[float] = field(default_factory=list)
     poi_data_path: str = ""
     poi_categories_path: str = ""
+    poi_icon_dir: str = ""
+    poi_pixel_scale: float = 1.0
+    poi_pixel_offset_x: float = 0.0
+    poi_pixel_offset_y: float = 0.0
     show_poi_overlay: bool = False
     show_poi_labels: bool = False
     poi_keyword: str = ""
     poi_category_ids: list[int] = field(default_factory=list)
     poi_max_draw: int = 1500
     poi_label_limit: int = 40
+    capture_interval_ms: int = 250
+    capture_region: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -145,6 +149,26 @@ def guess_poi_categories_path(
     return str(sibling) if sibling.exists() else ""
 
 
+def guess_poi_icon_dir(
+    poi_data_path: str | Path,
+    explicit_path: str | Path | None = None,
+) -> str:
+    if explicit_path:
+        candidate = Path(explicit_path).expanduser()
+        if candidate.exists() and candidate.is_dir():
+            return str(candidate)
+
+    poi_path = Path(poi_data_path).expanduser()
+    if not poi_path.exists():
+        return ""
+
+    for sibling_name in ("icons", "icon_cache", "icon_cache_caiji", "icon_cache_wiki"):
+        sibling = poi_path.with_name(sibling_name)
+        if sibling.exists() and sibling.is_dir():
+            return str(sibling)
+    return ""
+
+
 def load_map_bounds_from_metadata(poi_data_path: str | Path) -> list[float]:
     metadata = load_map_metadata_from_poi_data(poi_data_path)
     bounds = metadata.get("bounds")
@@ -185,6 +209,23 @@ def apply_map_metadata_defaults(config: AppConfig) -> AppConfig:
 
     if config.map_projection == "linear" and metadata.get("stitched_map_projection"):
         config.map_projection = str(metadata["stitched_map_projection"])
+
+    if not config.poi_icon_dir and metadata.get("poi_icon_dir"):
+        icon_dir = Path(config.poi_data_path).expanduser().with_name(str(metadata["poi_icon_dir"]))
+        if icon_dir.exists() and icon_dir.is_dir():
+            config.poi_icon_dir = str(icon_dir)
+
+    if not config.poi_icon_dir:
+        config.poi_icon_dir = guess_poi_icon_dir(config.poi_data_path, config.poi_icon_dir)
+
+    if metadata.get("poi_pixel_scale") is not None and config.poi_pixel_scale == 1.0:
+        config.poi_pixel_scale = float(metadata["poi_pixel_scale"])
+
+    if metadata.get("poi_pixel_offset_x") is not None and config.poi_pixel_offset_x == 0.0:
+        config.poi_pixel_offset_x = float(metadata["poi_pixel_offset_x"])
+
+    if metadata.get("poi_pixel_offset_y") is not None and config.poi_pixel_offset_y == 0.0:
+        config.poi_pixel_offset_y = float(metadata["poi_pixel_offset_y"])
 
     tile_grid = metadata.get("max_zoom_tile_grid")
     if isinstance(tile_grid, dict):
