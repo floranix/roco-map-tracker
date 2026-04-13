@@ -35,6 +35,7 @@ class GlobalLocalizer:
     def __init__(
         self,
         map_gray: np.ndarray,
+        map_color: np.ndarray | None,
         matcher: FeatureMatcher,
         min_match_count: int,
         ransac_threshold: float,
@@ -54,6 +55,10 @@ class GlobalLocalizer:
         template_match_blur_size: int = 7,
     ) -> None:
         self.map_gray = map_gray
+        if map_color is None:
+            self.map_color = cv2.cvtColor(map_gray, cv2.COLOR_GRAY2BGR)
+        else:
+            self.map_color = map_color
         self.matcher = matcher
         self.min_match_count = min_match_count
         self.ransac_threshold = ransac_threshold
@@ -91,6 +96,7 @@ class GlobalLocalizer:
     def localize(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None = None,
         frame_mask: np.ndarray | None = None,
         content_mask: np.ndarray | None = None,
         search_region: Optional[tuple[int, int, int, int]] = None,
@@ -119,6 +125,7 @@ class GlobalLocalizer:
         if content_mask is not None and self.use_template_matching:
             template_result = self._localize_with_template_matching(
                 frame_gray=frame_gray,
+                frame_color=frame_color,
                 content_mask=content_mask,
                 search_region=search_region,
                 state=state,
@@ -143,6 +150,7 @@ class GlobalLocalizer:
             if search_region is None:
                 tile_result = self._search_global_tiles(
                     frame_gray=frame_gray,
+                    frame_color=frame_color,
                     content_mask=content_mask,
                     frame_keypoints=frame_keypoints,
                     frame_descriptors=frame_descriptors,
@@ -154,6 +162,7 @@ class GlobalLocalizer:
 
             direct_result = self._localize_from_descriptors(
                 frame_gray=frame_gray,
+                frame_color=frame_color,
                 content_mask=content_mask,
                 frame_keypoints=frame_keypoints,
                 frame_descriptors=frame_descriptors,
@@ -170,6 +179,7 @@ class GlobalLocalizer:
     def localize_template(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None,
         content_mask: np.ndarray | None,
         search_region: Optional[tuple[int, int, int, int]] = None,
         state: str = "tracking",
@@ -183,6 +193,7 @@ class GlobalLocalizer:
             return None
         return self._localize_with_template_matching(
             frame_gray=frame_gray,
+            frame_color=frame_color,
             content_mask=content_mask,
             search_region=search_region,
             state=state,
@@ -196,6 +207,7 @@ class GlobalLocalizer:
     def _search_global_tiles(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None,
         content_mask: np.ndarray | None,
         frame_keypoints,
         frame_descriptors,
@@ -219,6 +231,7 @@ class GlobalLocalizer:
         for _match_count, matches, tile in ranked_tiles[:active_top_k]:
             result = self._localize_from_candidate(
                 frame_gray=frame_gray,
+                frame_color=frame_color,
                 content_mask=content_mask,
                 frame_keypoints=frame_keypoints,
                 map_keypoints=tile.keypoints,
@@ -233,6 +246,7 @@ class GlobalLocalizer:
     def _localize_from_descriptors(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None,
         content_mask: np.ndarray | None,
         frame_keypoints,
         frame_descriptors,
@@ -247,6 +261,7 @@ class GlobalLocalizer:
             return None
         return self._localize_from_candidate(
             frame_gray=frame_gray,
+            frame_color=frame_color,
             content_mask=content_mask,
             frame_keypoints=frame_keypoints,
             map_keypoints=map_keypoints,
@@ -259,6 +274,7 @@ class GlobalLocalizer:
     def _localize_from_candidate(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None,
         content_mask: np.ndarray | None,
         frame_keypoints,
         map_keypoints,
@@ -277,7 +293,12 @@ class GlobalLocalizer:
 
         adjusted_homography = self._adjust_homography_for_scale(homography, scale)
         feature_score = self._score_matches(len(matches), inliers)
-        verification_score = self._verify_candidate(frame_gray, content_mask, adjusted_homography)
+        verification_score = self._verify_candidate(
+            frame_gray,
+            content_mask,
+            adjusted_homography,
+            frame_color=frame_color,
+        )
         if verification_score is not None and verification_score < 0.12:
             return None
         return self._try_build_result(
@@ -323,6 +344,7 @@ class GlobalLocalizer:
     def _localize_with_template_matching(
         self,
         frame_gray: np.ndarray,
+        frame_color: np.ndarray | None,
         content_mask: np.ndarray,
         search_region: Optional[tuple[int, int, int, int]],
         state: str,
@@ -338,6 +360,12 @@ class GlobalLocalizer:
         active_refine_radius = max(64, int(refine_radius or self.template_match_refine_radius))
         active_min_score = float(
             np.clip(self.template_match_min_score if min_score is None else min_score, 0.0, 1.0)
+        )
+        active_top_per_scale, active_top_k = self._adjust_template_candidate_limits(
+            frame_shape=frame_gray.shape,
+            search_region=search_region,
+            top_per_scale=active_top_per_scale,
+            top_k=active_top_k,
         )
 
         coarse_candidates: list[TemplateMatchCandidate]
@@ -380,7 +408,12 @@ class GlobalLocalizer:
         best_result: Optional[LocalizationResult] = None
         for candidate in refined_candidates[:active_top_k]:
             homography = self._template_candidate_homography(candidate)
-            verification_score = self._verify_candidate(frame_gray, content_mask, homography)
+            verification_score = self._verify_candidate(
+                frame_gray,
+                content_mask,
+                homography,
+                frame_color=frame_color,
+            )
             if verification_score is not None and verification_score < active_min_score * 0.75:
                 continue
             result = self._try_build_result(
@@ -807,6 +840,7 @@ class GlobalLocalizer:
         frame_gray: np.ndarray,
         content_mask: np.ndarray | None,
         homography: np.ndarray,
+        frame_color: np.ndarray | None = None,
     ) -> float | None:
         comparison_mask = self._comparison_mask(frame_gray, content_mask, homography)
         if comparison_mask is None or np.count_nonzero(comparison_mask) < 256:
@@ -827,7 +861,21 @@ class GlobalLocalizer:
         )
         intensity_score = self._masked_intensity_similarity(frame_gray, aligned_map, comparison_mask)
         edge_score = self._masked_edge_similarity(frame_gray, aligned_map, comparison_mask)
-        return float(np.clip(0.6 * intensity_score + 0.4 * edge_score, 0.0, 1.0))
+        grayscale_score = float(np.clip(0.6 * intensity_score + 0.4 * edge_score, 0.0, 1.0))
+
+        if frame_color is None or frame_color.shape[:2] != frame_gray.shape[:2]:
+            return grayscale_score
+
+        aligned_map_color = cv2.warpPerspective(
+            self.map_color,
+            inverse_homography,
+            (frame_gray.shape[1], frame_gray.shape[0]),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0,
+        )
+        color_score = self._masked_color_similarity(frame_color, aligned_map_color, comparison_mask)
+        return float(np.clip(0.45 * grayscale_score + 0.55 * color_score, 0.0, 1.0))
 
     def _comparison_mask(
         self,
@@ -904,6 +952,49 @@ class GlobalLocalizer:
         overlap = int(np.count_nonzero((frame_edges > 0) & (map_edges > 0)))
         total = max(1, int(np.count_nonzero(frame_edges) + np.count_nonzero(map_edges)))
         return float(np.clip((2.0 * overlap) / total, 0.0, 1.0))
+
+    @staticmethod
+    def _masked_color_similarity(
+        frame_color: np.ndarray,
+        aligned_map_color: np.ndarray,
+        mask: np.ndarray,
+    ) -> float:
+        valid = mask > 0
+        if int(valid.sum()) < 256:
+            return 0.5
+
+        frame_hsv = cv2.cvtColor(frame_color, cv2.COLOR_BGR2HSV)
+        map_hsv = cv2.cvtColor(aligned_map_color, cv2.COLOR_BGR2HSV)
+
+        frame_hue = frame_hsv[:, :, 0][valid].astype(np.float32)
+        map_hue = map_hsv[:, :, 0][valid].astype(np.float32)
+        frame_sat = frame_hsv[:, :, 1][valid].astype(np.float32)
+        map_sat = map_hsv[:, :, 1][valid].astype(np.float32)
+        frame_val = frame_hsv[:, :, 2][valid].astype(np.float32)
+        map_val = map_hsv[:, :, 2][valid].astype(np.float32)
+
+        hue_diff = np.minimum(np.abs(frame_hue - map_hue), 180.0 - np.abs(frame_hue - map_hue))
+        sat_diff = np.abs(frame_sat - map_sat)
+        val_diff = np.abs(frame_val - map_val)
+
+        hue_similarity = np.clip(1.0 - hue_diff / 45.0, 0.0, 1.0)
+        sat_similarity = np.clip(1.0 - sat_diff / 140.0, 0.0, 1.0)
+        val_similarity = np.clip(1.0 - val_diff / 120.0, 0.0, 1.0)
+
+        return float(np.mean(0.55 * hue_similarity + 0.25 * sat_similarity + 0.20 * val_similarity))
+
+    @staticmethod
+    def _adjust_template_candidate_limits(
+        frame_shape: tuple[int, ...],
+        search_region: Optional[tuple[int, int, int, int]],
+        top_per_scale: int,
+        top_k: int,
+    ) -> tuple[int, int]:
+        if search_region is not None:
+            return top_per_scale, top_k
+        if min(frame_shape[:2]) > 140:
+            return top_per_scale, top_k
+        return max(top_per_scale, 4), max(top_k, 10)
 
     def _is_geometry_plausible(self, frame_gray: np.ndarray, corners: np.ndarray) -> bool:
         if corners.shape != (4, 2) or not np.isfinite(corners).all():

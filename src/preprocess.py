@@ -8,6 +8,13 @@ import numpy as np
 from src.utils import AppConfig, load_image, resize_image
 
 
+MINIMAP_HEADING_MASK_HALF_WIDTH_RATIO = 0.22
+MINIMAP_HEADING_MASK_TOP_RATIO = 1.0
+MINIMAP_HEADING_MASK_BOTTOM_RATIO = 0.45
+MINIMAP_HEADING_MASK_CIRCLE_RATIO = 0.18
+MINIMAP_HEADING_MASK_CENTER_Y_RATIO = 0.72
+
+
 @dataclass
 class MapBundle:
     color: np.ndarray
@@ -16,6 +23,7 @@ class MapBundle:
 
 @dataclass
 class PreparedFrame:
+    color: np.ndarray
     gray: np.ndarray
     feature_mask: np.ndarray | None = None
     content_mask: np.ndarray | None = None
@@ -37,13 +45,16 @@ class MapPreprocessor:
     def prepare_frame_bundle(self, frame: np.ndarray) -> PreparedFrame:
         frame, feature_mask, content_mask = self._preprocess_frame(frame)
         if frame.ndim == 3:
+            color = frame.copy()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         else:
             gray = frame.copy()
+            color = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        color = resize_image(color, self.config.resize_ratio)
         gray = resize_image(gray, self.config.resize_ratio)
         feature_mask = self._resize_mask(feature_mask, self.config.resize_ratio)
         content_mask = self._resize_mask(content_mask, self.config.resize_ratio)
-        return PreparedFrame(gray=gray, feature_mask=feature_mask, content_mask=content_mask)
+        return PreparedFrame(color=color, gray=gray, feature_mask=feature_mask, content_mask=content_mask)
 
     def _preprocess_frame(
         self,
@@ -78,6 +89,7 @@ class MapPreprocessor:
 
         center_mask_radius = max(1, int(round(radius * self.config.minimap_center_mask_ratio)))
         cv2.circle(content_mask, (center_x, center_y), center_mask_radius, 0, -1)
+        self._mask_heading_indicator(content_mask, center_x=center_x, center_y=center_y, radius=radius)
 
         if circle is not None:
             icon_x = int(round(center_x + radius * self.config.minimap_icon_offset_x_ratio))
@@ -97,6 +109,25 @@ class MapPreprocessor:
         masked[content_mask == 0] = 0
         feature_mask = self._build_feature_mask(content_mask)
         return masked, feature_mask, content_mask
+
+    @staticmethod
+    def _mask_heading_indicator(
+        mask: np.ndarray,
+        center_x: int,
+        center_y: int,
+        radius: int,
+    ) -> None:
+        half_width = max(4, int(round(radius * MINIMAP_HEADING_MASK_HALF_WIDTH_RATIO)))
+        top = max(0, int(round(center_y - radius * MINIMAP_HEADING_MASK_TOP_RATIO)))
+        bottom = min(mask.shape[0], int(round(center_y - radius * MINIMAP_HEADING_MASK_BOTTOM_RATIO)))
+        left = max(0, center_x - half_width)
+        right = min(mask.shape[1], center_x + half_width)
+        if bottom > top and right > left:
+            mask[top:bottom, left:right] = 0
+
+        circle_center_y = max(0, int(round(center_y - radius * MINIMAP_HEADING_MASK_CENTER_Y_RATIO)))
+        circle_radius = max(4, int(round(radius * MINIMAP_HEADING_MASK_CIRCLE_RATIO)))
+        cv2.circle(mask, (center_x, circle_center_y), circle_radius, 0, -1)
 
     def _mask_overlay_components(
         self,

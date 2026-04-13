@@ -32,6 +32,7 @@ class LocalizationPipeline:
         self.matcher = FeatureMatcher(config)
         self.localizer = GlobalLocalizer(
             map_gray=self.map_bundle.gray,
+            map_color=self.map_bundle.color,
             matcher=self.matcher,
             min_match_count=config.min_match_count,
             ransac_threshold=config.ransac_threshold,
@@ -68,6 +69,7 @@ class LocalizationPipeline:
         if search_region is not None:
             fast_template_result = self.localizer.localize_template(
                 frame_gray=frame_gray,
+                frame_color=prepared_frame.color,
                 content_mask=prepared_frame.content_mask,
                 search_region=search_region,
                 state="tracking",
@@ -87,6 +89,7 @@ class LocalizationPipeline:
         if result is None and search_region is not None:
             result = self.localizer.localize(
                 frame_gray,
+                frame_color=prepared_frame.color,
                 frame_mask=prepared_frame.feature_mask,
                 content_mask=prepared_frame.content_mask,
                 search_region=search_region,
@@ -99,6 +102,7 @@ class LocalizationPipeline:
             relocalization_overrides = self._build_relocalization_overrides()
             result = self.localizer.localize(
                 frame_gray,
+                frame_color=prepared_frame.color,
                 frame_mask=prepared_frame.feature_mask,
                 content_mask=prepared_frame.content_mask,
                 search_region=None,

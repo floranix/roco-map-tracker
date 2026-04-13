@@ -102,6 +102,8 @@ class ResourceRoutesTestCase(unittest.TestCase):
             tile_y_range=None,
             tile_size=256,
             pixel_scale=1.0,
+            pixel_scale_x=0.0,
+            pixel_scale_y=0.0,
             pixel_offset_x=0.0,
             pixel_offset_y=0.0,
         )

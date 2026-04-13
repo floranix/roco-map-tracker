@@ -13,6 +13,7 @@ if __package__ in {None, ""}:
 from src.pipeline import LocalizationPipeline
 from src.gui import launch_gui
 from src.poi_overlay import PoiOverlay, PoiRenderOptions
+from src.resource_sources import apply_biliwiki_resource_defaults
 from src.screen_pick import iterate_screen_region_frames, parse_capture_region
 from src.utils import (
     apply_map_metadata_defaults,
@@ -27,8 +28,6 @@ from src.utils import (
 
 if Path("configs/rocom_tracker.yaml").exists():
     DEFAULT_CONFIG_PATH = "configs/rocom_tracker.yaml"
-elif Path("configs/rocom_17173.yaml").exists():
-    DEFAULT_CONFIG_PATH = "configs/rocom_17173.yaml"
 else:
     DEFAULT_CONFIG_PATH = "configs/default.yaml"
 
@@ -84,6 +83,7 @@ def main() -> int:
         config.capture_region = list(parse_capture_region(args.screen_region))
     if args.capture_interval_ms is not None:
         config.capture_interval_ms = max(0, int(args.capture_interval_ms))
+    config = apply_biliwiki_resource_defaults(config, force_refresh_points=False)
     config.poi_categories_path = guess_poi_categories_path(config.poi_data_path, config.poi_categories_path)
     config = apply_map_metadata_defaults(config)
 
@@ -160,6 +160,8 @@ def build_poi_overlay(config):
         tile_y_range=tuple(config.map_tile_y_range) if len(config.map_tile_y_range) == 2 else None,
         tile_size=config.map_tile_size,
         pixel_scale=config.poi_pixel_scale,
+        pixel_scale_x=config.poi_pixel_scale_x or None,
+        pixel_scale_y=config.poi_pixel_scale_y or None,
         pixel_offset_x=config.poi_pixel_offset_x,
         pixel_offset_y=config.poi_pixel_offset_y,
     )

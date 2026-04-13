@@ -234,6 +234,8 @@ def build_route_cache_signature(
     tile_y_range: tuple[int, int] | None,
     tile_size: int,
     pixel_scale: float,
+    pixel_scale_x: float,
+    pixel_scale_y: float,
     pixel_offset_x: float,
     pixel_offset_y: float,
 ) -> dict:
@@ -251,6 +253,8 @@ def build_route_cache_signature(
         "tile_y_range": list(tile_y_range) if tile_y_range is not None else None,
         "tile_size": int(tile_size),
         "pixel_scale": float(pixel_scale),
+        "pixel_scale_x": float(pixel_scale_x),
+        "pixel_scale_y": float(pixel_scale_y),
         "pixel_offset_x": float(pixel_offset_x),
         "pixel_offset_y": float(pixel_offset_y),
     }

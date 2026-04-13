@@ -17,7 +17,6 @@ from src.collectible_materials import (
     active_collectible_materials,
     collectible_ids_for_kind,
 )
-from src.map_alignment import MapAlignment, resolve_map_alignment
 from src.pipeline import LocalizationPipeline
 from src.poi_overlay import PoiOverlay, PoiRenderOptions
 from src.resource_routes import (
@@ -40,6 +39,7 @@ from src.utils import (
     LocalizationResult,
     apply_map_metadata_defaults,
     draw_localization,
+    draw_position_marker,
     ensure_directory,
     format_result_text,
     guess_poi_categories_path,
@@ -79,12 +79,11 @@ class LocalizationGUI:
 
         if Path("configs/rocom_tracker.yaml").exists():
             default_config_path = "configs/rocom_tracker.yaml"
-        elif Path("configs/rocom_17173.yaml").exists():
-            default_config_path = "configs/rocom_17173.yaml"
         else:
             default_config_path = "configs/default.yaml"
         self.config_path_var = tk.StringVar(value=default_config_path)
         self.map_path_var = tk.StringVar(value="")
+        self.default_resource_var = tk.StringVar(value="自动使用项目内置配置与完整地图")
         self.poi_data_path_var = tk.StringVar(value="")
         self.input_mode_var = tk.StringVar(value="screen_region")
         self.input_path_var = tk.StringVar(value="")
@@ -115,13 +114,15 @@ class LocalizationGUI:
         self._map_canvas_image_id: int | None = None
         self._map_source_path = ""
         self._map_source_image: np.ndarray | None = None
-        self._map_alignment_cache: dict[tuple[str, str], MapAlignment | None] = {}
         self._map_base_view: np.ndarray | None = None
         self._map_base_key: tuple | None = None
         self._map_view_origin: tuple[int, int] = (0, 0)
+        self._map_display_size: tuple[int, int] = (0, 0)
+        self._map_view_center_ratio: tuple[float, float] | None = None
         self._map_scale: float = 1.0
         self._map_refresh_pending = False
         self._map_refresh_center = False
+        self._center_on_first_valid_result = False
         self._suppress_canvas_view_refresh = False
         self._live_map_refresh_interval_ms = 250
         self._last_result: LocalizationResult | None = None
@@ -147,25 +148,20 @@ class LocalizationGUI:
         controls.grid(row=0, column=0, sticky="ew")
         controls.columnconfigure(1, weight=1)
 
-        ttk.Label(controls, text="配置文件").grid(row=0, column=0, sticky="w")
-        ttk.Entry(controls, textvariable=self.config_path_var).grid(row=0, column=1, sticky="ew", padx=8)
-        ttk.Button(controls, text="选择", command=self._select_config).grid(row=0, column=2, padx=4)
-        ttk.Button(controls, text="载入", command=self._load_config_defaults).grid(row=0, column=3)
+        ttk.Label(controls, text="内置资源").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, textvariable=self.default_resource_var).grid(row=0, column=1, columnspan=2, sticky="ew", padx=8)
+        ttk.Button(controls, text="重新载入", command=self._load_config_defaults).grid(row=0, column=3)
 
-        ttk.Label(controls, text="完整地图").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(controls, textvariable=self.map_path_var).grid(row=1, column=1, sticky="ew", padx=8, pady=(8, 0))
-        ttk.Button(controls, text="选择", command=self._select_map).grid(row=1, column=2, padx=4, pady=(8, 0))
-
-        ttk.Label(controls, text="采集点位").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(controls, text="采集点位").grid(row=1, column=0, sticky="w", pady=(8, 0))
         poi_action_row = ttk.Frame(controls)
-        poi_action_row.grid(row=2, column=1, columnspan=3, sticky="w", pady=(8, 0))
+        poi_action_row.grid(row=1, column=1, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(poi_action_row, text="自动使用 wiki.biligame.com 的采集点缓存").grid(row=0, column=0, padx=(0, 8))
         ttk.Button(poi_action_row, text="刷新 biliwiki", command=self._reload_biliwiki_collectibles).grid(row=0, column=1, padx=(0, 8))
         ttk.Label(poi_action_row, textvariable=self.poi_summary_var).grid(row=0, column=2, sticky="w")
 
-        ttk.Label(controls, text="输入源").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(controls, text="输入源").grid(row=2, column=0, sticky="w", pady=(8, 0))
         input_row = ttk.Frame(controls)
-        input_row.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        input_row.grid(row=2, column=1, columnspan=3, sticky="ew", pady=(8, 0))
         input_row.columnconfigure(2, weight=1)
 
         ttk.Radiobutton(input_row, text="单张截图", value="frame", variable=self.input_mode_var).grid(row=0, column=0, padx=(0, 8))
@@ -175,17 +171,17 @@ class LocalizationGUI:
         ttk.Label(input_row, text="间隔(ms)").grid(row=0, column=4, padx=(8, 4))
         ttk.Entry(input_row, width=8, textvariable=self.capture_interval_var).grid(row=0, column=5)
 
-        ttk.Label(controls, text="输出目录").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(controls, textvariable=self.output_dir_var).grid(row=4, column=1, sticky="ew", padx=8, pady=(8, 0))
-        ttk.Button(controls, text="选择", command=self._select_output_dir).grid(row=4, column=2, padx=4, pady=(8, 0))
+        ttk.Label(controls, text="输出目录").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(controls, textvariable=self.output_dir_var).grid(row=3, column=1, sticky="ew", padx=8, pady=(8, 0))
+        ttk.Button(controls, text="选择", command=self._select_output_dir).grid(row=3, column=2, padx=4, pady=(8, 0))
         ttk.Checkbutton(
             controls,
             text="保存可视化结果",
             variable=self.save_visualizations_var,
-        ).grid(row=4, column=3, sticky="w", pady=(8, 0))
+        ).grid(row=3, column=3, sticky="w", pady=(8, 0))
 
         filter_row = ttk.Frame(controls)
-        filter_row.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        filter_row.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(8, 0))
         filter_row.columnconfigure(3, weight=1)
         ttk.Checkbutton(
             filter_row,
@@ -198,7 +194,7 @@ class LocalizationGUI:
         ttk.Label(filter_row, textvariable=self.resource_route_summary_var).grid(row=0, column=4, sticky="e", padx=(12, 0))
 
         action_row = ttk.Frame(controls)
-        action_row.grid(row=6, column=0, columnspan=4, sticky="ew", pady=(12, 0))
+        action_row.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(12, 0))
         action_row.columnconfigure(2, weight=1)
         ttk.Checkbutton(
             action_row,
@@ -220,7 +216,7 @@ class LocalizationGUI:
 
         map_toolbar = ttk.Frame(left_panel)
         map_toolbar.grid(row=1, column=0, sticky="ew", pady=(6, 8))
-        map_toolbar.columnconfigure(4, weight=1)
+        map_toolbar.columnconfigure(5, weight=1)
         ttk.Button(map_toolbar, text="缩小", command=lambda: self._step_map_zoom(1 / 1.25)).grid(row=0, column=0, padx=(0, 6))
         ttk.Scale(
             map_toolbar,
@@ -232,7 +228,8 @@ class LocalizationGUI:
         ).grid(row=0, column=1, sticky="ew")
         ttk.Button(map_toolbar, text="放大", command=lambda: self._step_map_zoom(1.25)).grid(row=0, column=2, padx=6)
         ttk.Button(map_toolbar, text="适配", command=self._reset_map_zoom).grid(row=0, column=3, padx=(0, 10))
-        ttk.Label(map_toolbar, textvariable=self.map_hint_var).grid(row=0, column=4, sticky="e")
+        ttk.Button(map_toolbar, text="回到当前位置", command=self._recenter_on_current_position).grid(row=0, column=4, padx=(0, 10))
+        ttk.Label(map_toolbar, textvariable=self.map_hint_var).grid(row=0, column=5, sticky="e")
 
         canvas_frame = ttk.Frame(left_panel)
         canvas_frame.grid(row=2, column=0, sticky="nsew")
@@ -249,6 +246,8 @@ class LocalizationGUI:
         self.map_canvas.bind("<MouseWheel>", self._on_map_mousewheel)
         self.map_canvas.bind("<Button-4>", self._on_map_mousewheel)
         self.map_canvas.bind("<Button-5>", self._on_map_mousewheel)
+        self.map_canvas.bind("<ButtonPress-1>", self._on_map_drag_start)
+        self.map_canvas.bind("<B1-Motion>", self._on_map_drag_move)
         content.add(left_panel, weight=3)
 
         right_panel = ttk.Frame(content, padding=12)
@@ -284,7 +283,9 @@ class LocalizationGUI:
     def _load_config_defaults(self) -> None:
         config_path = Path(self.config_path_var.get()).expanduser()
         if not config_path.exists():
-            self.status_var.set("未找到配置文件，将使用当前输入")
+            self.map_path_var.set("")
+            self.default_resource_var.set(f"未找到内置配置：{config_path.name}")
+            self.status_var.set("未找到内置配置，将使用默认设置")
             self._reload_biliwiki_collectibles(silent=True)
             self._schedule_map_refresh(invalidate_base=True)
             return
@@ -292,7 +293,8 @@ class LocalizationGUI:
         try:
             config = load_config(config_path)
         except Exception as exc:
-            self.status_var.set("载入配置失败")
+            self.default_resource_var.set(f"内置配置载入失败：{config_path.name}")
+            self.status_var.set("内置配置载入失败")
             messagebox.showerror("配置错误", str(exc))
             return
 
@@ -303,7 +305,15 @@ class LocalizationGUI:
             messagebox.showerror("资源错误", str(exc))
             return
 
-        self.map_path_var.set(config.map_path)
+        recognition_map_path = resource_context.config.map_path
+        self.map_path_var.set(recognition_map_path)
+        self.default_resource_var.set(
+            self._format_default_resource_summary(
+                config_path=config_path,
+                recognition_map_path=recognition_map_path,
+                display_map_path=resource_context.config.display_map_path or resource_context.config.map_path,
+            )
+        )
         self.poi_data_path_var.set(resource_context.config.poi_data_path)
         self.output_dir_var.set(config.output_dir)
         self.save_visualizations_var.set(config.save_visualizations)
@@ -319,7 +329,7 @@ class LocalizationGUI:
         self._clear_resource_route(silent=True)
         self._load_poi_catalog()
         self._apply_category_selection(config.poi_category_ids)
-        self.status_var.set("配置已载入")
+        self.status_var.set("内置配置已载入")
         self._schedule_map_refresh(invalidate_base=True)
 
     def _select_config(self) -> None:
@@ -408,6 +418,7 @@ class LocalizationGUI:
         self.log_text.delete("1.0", tk.END)
         self.status_var.set("识别中...")
         self._stop_event.clear()
+        self._center_on_first_valid_result = True
 
         input_mode = self.input_mode_var.get()
         input_path = self.input_path_var.get().strip()
@@ -555,7 +566,13 @@ class LocalizationGUI:
                 self._last_result = payload["result"]
                 self.status_var.set(f"正在处理：{payload['frame_name']}")
                 self.map_hint_var.set(payload["message_text"])
-                self._schedule_map_refresh(center_on_result=self.recognition_enabled_var.get())
+                should_center = (
+                    self._center_on_first_valid_result
+                    and self._result_has_position(payload["result"])
+                )
+                if should_center:
+                    self._center_on_first_valid_result = False
+                self._schedule_map_refresh(center_on_result=should_center)
             elif message_type == "done":
                 self._worker = None
                 self.status_var.set(str(payload))
@@ -575,7 +592,7 @@ class LocalizationGUI:
             and self._worker.is_alive()
             and self._last_result is not None
         ):
-            self._schedule_map_refresh(center_on_result=True)
+            self._schedule_map_refresh()
 
         self.root.after(self._live_map_refresh_interval_ms, self._poll_live_map_refresh)
 
@@ -588,7 +605,7 @@ class LocalizationGUI:
         input_mode = self.input_mode_var.get().strip()
 
         if not map_path:
-            raise ValueError("请选择完整地图图像。")
+            raise ValueError("默认识别地图不可用，请检查项目内置资源。")
         if require_input and not input_path:
             raise ValueError("请选择输入源或屏幕捕捉区域。")
 
@@ -740,6 +757,8 @@ class LocalizationGUI:
         config.poi_categories_path = biliwiki_config.poi_categories_path
         config.poi_icon_dir = biliwiki_config.poi_icon_dir
         config.poi_pixel_scale = biliwiki_config.poi_pixel_scale
+        config.poi_pixel_scale_x = biliwiki_config.poi_pixel_scale_x
+        config.poi_pixel_scale_y = biliwiki_config.poi_pixel_scale_y
         config.poi_pixel_offset_x = biliwiki_config.poi_pixel_offset_x
         config.poi_pixel_offset_y = biliwiki_config.poi_pixel_offset_y
         config.map_projection = biliwiki_config.map_projection
@@ -785,6 +804,8 @@ class LocalizationGUI:
             tile_y_range=tuple(config.map_tile_y_range) if len(config.map_tile_y_range) == 2 else None,
             tile_size=config.map_tile_size,
             pixel_scale=config.poi_pixel_scale,
+            pixel_scale_x=config.poi_pixel_scale_x or None,
+            pixel_scale_y=config.poi_pixel_scale_y or None,
             pixel_offset_x=config.poi_pixel_offset_x,
             pixel_offset_y=config.poi_pixel_offset_y,
         )
@@ -801,6 +822,8 @@ class LocalizationGUI:
             tuple(config.map_tile_y_range),
             config.map_tile_size,
             config.poi_pixel_scale,
+            config.poi_pixel_scale_x,
+            config.poi_pixel_scale_y,
             config.poi_pixel_offset_x,
             config.poi_pixel_offset_y,
         )
@@ -838,7 +861,7 @@ class LocalizationGUI:
 
         config = self._build_display_config()
         if config is None:
-            self._show_map_message("请选择完整地图图像")
+            self._show_map_message("默认地图不可用")
             return
 
         display_map_path = self._current_display_map_path(config)
@@ -863,11 +886,7 @@ class LocalizationGUI:
         display_width = max(1, int(round(source_map.shape[1] * scale)))
         display_height = max(1, int(round(source_map.shape[0] * scale)))
         selected_category_ids = tuple(self._get_selected_category_ids())
-        display_result = self._result_for_display(
-            source_map_path=config.map_path,
-            display_map_path=display_map_path,
-            result=self._last_result,
-        )
+        display_result = self._result_for_display(result=self._last_result)
         view_origin = self._resolve_view_origin(
             display_width=display_width,
             display_height=display_height,
@@ -931,6 +950,14 @@ class LocalizationGUI:
             self._map_base_view = base_view
             self._map_base_key = base_key
             self._map_view_origin = view_origin
+            self._map_display_size = (display_width, display_height)
+            self._map_view_center_ratio = self._view_center_ratio_for_origin(
+                view_origin=view_origin,
+                image_width=display_width,
+                image_height=display_height,
+                canvas_width=canvas_width,
+                canvas_height=canvas_height,
+            )
             self._map_scale = scale
             if self._last_result is None:
                 self.map_hint_var.set(summary_text)
@@ -977,25 +1004,18 @@ class LocalizationGUI:
             return
 
         viewport_x, viewport_y = viewport_origin
-        if result.corners:
-            points = np.array(
-                [
-                    (
-                        int(round(x * self._map_scale)) - viewport_x,
-                        int(round(y * self._map_scale)) - viewport_y,
-                    )
-                    for x, y in result.corners
-                ],
-                dtype=np.int32,
-            ).reshape(-1, 1, 2)
-            cv2.polylines(image, [points], isClosed=True, color=(0, 200, 255), thickness=2)
-
         if result.x == result.x and result.y == result.y:
             center = (
                 int(round(result.x * self._map_scale)) - viewport_x,
                 int(round(result.y * self._map_scale)) - viewport_y,
             )
-            cv2.circle(image, center, 7, (0, 0, 255), -1, cv2.LINE_AA)
+            draw_position_marker(image, center, target_edge=self._position_marker_edge_pixels())
+
+    def _position_marker_edge_pixels(self) -> int:
+        scale = max(1e-6, float(self._map_scale))
+        zoom_multiplier = max(1.0, math.sqrt(scale / 0.1))
+        edge = int(round(34 * zoom_multiplier))
+        return max(28, min(56, edge))
 
     def _set_map_canvas_image(
         self,
@@ -1032,15 +1052,19 @@ class LocalizationGUI:
         left, top = viewport_origin
         canvas_width = max(1, self.map_canvas.winfo_width())
         canvas_height = max(1, self.map_canvas.winfo_height())
-        if image_width <= canvas_width:
-            self.map_canvas.xview_moveto(0.0)
-        else:
-            self.map_canvas.xview_moveto(left / max(image_width, 1))
+        self._suppress_canvas_view_refresh = True
+        try:
+            if image_width <= canvas_width:
+                self.map_canvas.xview_moveto(0.0)
+            else:
+                self.map_canvas.xview_moveto(left / max(image_width, 1))
 
-        if image_height <= canvas_height:
-            self.map_canvas.yview_moveto(0.0)
-        else:
-            self.map_canvas.yview_moveto(top / max(image_height, 1))
+            if image_height <= canvas_height:
+                self.map_canvas.yview_moveto(0.0)
+            else:
+                self.map_canvas.yview_moveto(top / max(image_height, 1))
+        finally:
+            self._suppress_canvas_view_refresh = False
 
     def _resolve_view_origin(
         self,
@@ -1061,9 +1085,11 @@ class LocalizationGUI:
             left = int(round(center_result.x * self._map_scale - canvas_width / 2.0))
             top = int(round(center_result.y * self._map_scale - canvas_height / 2.0))
         else:
-            x_fraction, y_fraction = self._current_canvas_view_fractions()
-            left = int(round(x_fraction * max_left))
-            top = int(round(y_fraction * max_top))
+            center_ratio = self._current_or_remembered_view_center_ratio()
+            center_x = center_ratio[0] * max(display_width, 1)
+            center_y = center_ratio[1] * max(display_height, 1)
+            left = int(round(center_x - canvas_width / 2.0))
+            top = int(round(center_y - canvas_height / 2.0))
 
         left = max(0, min(left, max_left))
         top = max(0, min(top, max_top))
@@ -1123,11 +1149,13 @@ class LocalizationGUI:
     def _on_canvas_xview(self, *args) -> None:
         self.map_canvas.xview(*args)
         if not self._suppress_canvas_view_refresh:
+            self._remember_current_view_center()
             self._schedule_map_refresh(invalidate_base=True)
 
     def _on_canvas_yview(self, *args) -> None:
         self.map_canvas.yview(*args)
         if not self._suppress_canvas_view_refresh:
+            self._remember_current_view_center()
             self._schedule_map_refresh(invalidate_base=True)
 
     def _show_map_message(self, text: str) -> None:
@@ -1149,16 +1177,28 @@ class LocalizationGUI:
         self.map_hint_var.set(text)
 
     def _step_map_zoom(self, factor: float) -> None:
+        self._remember_current_view_center()
         current = float(self.map_zoom_var.get())
         self.map_zoom_var.set(max(0.5, min(8.0, current * factor)))
         self._schedule_map_refresh(invalidate_base=True)
 
     def _reset_map_zoom(self) -> None:
+        self._remember_current_view_center()
         self.map_zoom_var.set(1.0)
         self._schedule_map_refresh(invalidate_base=True)
 
     def _on_map_zoom_changed(self, _value=None) -> None:
+        self._remember_current_view_center()
         self._schedule_map_refresh(invalidate_base=True)
+
+    def _recenter_on_current_position(self) -> None:
+        if not self._result_has_position(self._last_result):
+            self.status_var.set("当前还没有可用定位结果")
+            self.map_hint_var.set("当前还没有可用定位结果")
+            return
+        self.status_var.set("已回到当前位置")
+        self.map_hint_var.set("已回到当前位置")
+        self._schedule_map_refresh(center_on_result=True, invalidate_base=True)
 
     def _on_map_canvas_configure(self, _event) -> None:
         self._schedule_map_refresh(invalidate_base=True)
@@ -1169,6 +1209,60 @@ class LocalizationGUI:
         else:
             self._step_map_zoom(1 / 1.15)
         return "break"
+
+    def _on_map_drag_start(self, event) -> None:
+        if self.map_canvas is None:
+            return
+        self.map_canvas.scan_mark(event.x, event.y)
+
+    def _on_map_drag_move(self, event) -> str:
+        if self.map_canvas is None:
+            return "break"
+        self.map_canvas.scan_dragto(event.x, event.y, gain=1)
+        self._remember_current_view_center()
+        self._schedule_map_refresh(invalidate_base=True)
+        return "break"
+
+    def _remember_current_view_center(self) -> None:
+        image_width, image_height = self._map_display_size
+        if image_width <= 0 or image_height <= 0:
+            return
+        self._map_view_center_ratio = self._view_center_ratio_from_canvas(image_width, image_height)
+
+    def _current_or_remembered_view_center_ratio(self) -> tuple[float, float]:
+        image_width, image_height = self._map_display_size
+        if image_width > 0 and image_height > 0 and self.map_canvas is not None and self._map_canvas_image_id is not None:
+            self._map_view_center_ratio = self._view_center_ratio_from_canvas(image_width, image_height)
+        if self._map_view_center_ratio is not None:
+            return self._map_view_center_ratio
+        return 0.5, 0.5
+
+    def _view_center_ratio_from_canvas(self, image_width: int, image_height: int) -> tuple[float, float]:
+        if self.map_canvas is None:
+            return 0.5, 0.5
+        x0, x1 = self.map_canvas.xview()
+        y0, y1 = self.map_canvas.yview()
+        center_x = ((x0 + x1) / 2.0) * max(image_width, 1)
+        center_y = ((y0 + y1) / 2.0) * max(image_height, 1)
+        return (
+            min(max(center_x / max(image_width, 1), 0.0), 1.0),
+            min(max(center_y / max(image_height, 1), 0.0), 1.0),
+        )
+
+    @staticmethod
+    def _view_center_ratio_for_origin(
+        view_origin: tuple[int, int],
+        image_width: int,
+        image_height: int,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> tuple[float, float]:
+        center_x = view_origin[0] + min(canvas_width, image_width) / 2.0
+        center_y = view_origin[1] + min(canvas_height, image_height) / 2.0
+        return (
+            min(max(center_x / max(image_width, 1), 0.0), 1.0),
+            min(max(center_y / max(image_height, 1), 0.0), 1.0),
+        )
 
     @staticmethod
     def _encode_png_base64(image: np.ndarray) -> str:
@@ -1217,6 +1311,8 @@ class LocalizationGUI:
             tile_y_range=tuple(source_context.config.map_tile_y_range) if len(source_context.config.map_tile_y_range) == 2 else None,
             tile_size=source_context.config.map_tile_size,
             pixel_scale=source_context.config.poi_pixel_scale,
+            pixel_scale_x=source_context.config.poi_pixel_scale_x,
+            pixel_scale_y=source_context.config.poi_pixel_scale_y,
             pixel_offset_x=source_context.config.poi_pixel_offset_x,
             pixel_offset_y=source_context.config.poi_pixel_offset_y,
         )
@@ -1237,11 +1333,7 @@ class LocalizationGUI:
             start_xy = None
             current_display_config = self._build_display_config()
             if current_display_config is not None:
-                display_result = self._result_for_display(
-                    source_map_path=current_display_config.map_path,
-                    display_map_path=display_map_path,
-                    result=self._last_result,
-                )
+                display_result = self._result_for_display(result=self._last_result)
                 if (
                     display_result is not None
                     and display_result.x == display_result.x
@@ -1290,33 +1382,29 @@ class LocalizationGUI:
 
     def _result_for_display(
         self,
-        source_map_path: str,
-        display_map_path: str,
         result: LocalizationResult | None,
     ) -> LocalizationResult | None:
+        return result
+
+    @staticmethod
+    def _result_has_position(result: LocalizationResult | None) -> bool:
         if result is None:
-            return None
-
-        normalized_source = str(Path(source_map_path).expanduser()) if source_map_path else ""
-        normalized_target = str(Path(display_map_path).expanduser()) if display_map_path else ""
-        if not normalized_source or not normalized_target:
-            return None
-        if normalized_source == normalized_target:
-            return result
-
-        alignment = self._resolve_map_alignment(normalized_source, normalized_target)
-        if alignment is None:
-            return None
-        return alignment.project_result(result)
-
-    def _resolve_map_alignment(self, source_map_path: str, target_map_path: str) -> MapAlignment | None:
-        cache_key = (source_map_path, target_map_path)
-        if cache_key not in self._map_alignment_cache:
-            self._map_alignment_cache[cache_key] = resolve_map_alignment(source_map_path, target_map_path)
-        return self._map_alignment_cache[cache_key]
+            return False
+        return result.x == result.x and result.y == result.y
 
     def _current_display_map_path(self, config: AppConfig) -> str:
         return config.display_map_path or config.map_path
+
+    @staticmethod
+    def _format_default_resource_summary(
+        config_path: Path,
+        recognition_map_path: str,
+        display_map_path: str,
+    ) -> str:
+        config_label = config_path.name or str(config_path)
+        recognition_label = Path(recognition_map_path).name if recognition_map_path else "未配置"
+        display_label = Path(display_map_path).name if display_map_path else recognition_label
+        return f"配置: {config_label} | 识别底图: {recognition_label} | 展示底图: {display_label}"
 
 
 def launch_gui() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass, field, fields
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,6 +13,9 @@ import yaml
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}
+POSITION_MARKER_ICON_PATH = Path(
+    "/Users/lanier/IdeaProjects/violet-jb-2/composeApp/src/commonMain/composeResources/drawable/ic_roco_def_head.png"
+)
 STATE_LABELS = {
     "tracking": "跟踪中",
     "relocalizing": "重定位中",
@@ -67,6 +71,7 @@ class AppConfig:
     ratio_test: float = 0.75
     ransac_threshold: float = 5.0
     orb_nfeatures: int = 5000
+    sift_nfeatures: int = 1500
     max_rotation_degrees: float = 8.0
     candidate_verification_weight: float = 0.55
     use_template_matching: bool = True
@@ -86,6 +91,8 @@ class AppConfig:
     poi_categories_path: str = ""
     poi_icon_dir: str = ""
     poi_pixel_scale: float = 1.0
+    poi_pixel_scale_x: float = 0.0
+    poi_pixel_scale_y: float = 0.0
     poi_pixel_offset_x: float = 0.0
     poi_pixel_offset_y: float = 0.0
     show_poi_overlay: bool = False
@@ -150,6 +157,9 @@ def guess_poi_categories_path(
         if candidate.exists():
             return str(candidate)
 
+    if not str(poi_data_path or "").strip():
+        return ""
+
     poi_path = Path(poi_data_path).expanduser()
     if not poi_path.exists():
         return ""
@@ -166,6 +176,9 @@ def guess_poi_icon_dir(
         candidate = Path(explicit_path).expanduser()
         if candidate.exists() and candidate.is_dir():
             return str(candidate)
+
+    if not str(poi_data_path or "").strip():
+        return ""
 
     poi_path = Path(poi_data_path).expanduser()
     if not poi_path.exists():
@@ -274,6 +287,23 @@ def load_image(path: str | Path, grayscale: bool = False) -> np.ndarray:
     return image
 
 
+@lru_cache(maxsize=4)
+def load_position_marker_icon(path: str | Path = POSITION_MARKER_ICON_PATH) -> np.ndarray | None:
+    image_path = Path(path).expanduser()
+    if not image_path.exists():
+        return None
+
+    icon = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
+    if icon is None:
+        return None
+    if icon.ndim == 2:
+        icon = cv2.cvtColor(icon, cv2.COLOR_GRAY2BGRA)
+    elif icon.shape[2] == 3:
+        alpha = np.full(icon.shape[:2], 255, dtype=np.uint8)
+        icon = np.dstack([icon, alpha])
+    return icon
+
+
 def resize_image(image: np.ndarray, ratio: float) -> np.ndarray:
     if ratio == 1.0:
         return image
@@ -323,13 +353,9 @@ def draw_localization(
 ) -> np.ndarray:
     annotated_map = map_image.copy()
 
-    if result.corners:
-        polygon = np.array(result.corners, dtype=np.int32).reshape(-1, 1, 2)
-        cv2.polylines(annotated_map, [polygon], isClosed=True, color=(0, 200, 255), thickness=2)
-
     if not math.isnan(result.x) and not math.isnan(result.y):
         center = (int(round(result.x)), int(round(result.y)))
-        cv2.circle(annotated_map, center, 8, (0, 0, 255), -1)
+        draw_position_marker(annotated_map, center, target_edge=34)
 
     annotated_frame = frame_image.copy()
 
@@ -452,16 +478,9 @@ def _build_overview_map(
     preview_height = max(1, int(round(map_height * scale)))
     overview = cv2.resize(annotated_map, (preview_width, preview_height), interpolation=cv2.INTER_AREA)
 
-    x0, y0, x1, y1 = focus_rect
-    rect_x0 = int(round(x0 * scale))
-    rect_y0 = int(round(y0 * scale))
-    rect_x1 = int(round(x1 * scale))
-    rect_y1 = int(round(y1 * scale))
-    cv2.rectangle(overview, (rect_x0, rect_y0), (rect_x1, rect_y1), (0, 0, 255), 2)
-
     if _is_finite_number(result.x) and _is_finite_number(result.y):
         point = (int(round(result.x * scale)), int(round(result.y * scale)))
-        cv2.circle(overview, point, 4, (0, 0, 255), -1)
+        draw_position_marker(overview, point, target_edge=14)
 
     return overview
 
@@ -492,3 +511,60 @@ def _overlay_overview_map(image: np.ndarray, overview_map: np.ndarray) -> None:
 
 def _is_finite_number(value: Optional[float]) -> bool:
     return value is not None and math.isfinite(value) and not math.isnan(value)
+
+
+def draw_position_marker(
+    image: np.ndarray,
+    point: tuple[int, int],
+    target_edge: int = 34,
+    icon_path: str | Path = POSITION_MARKER_ICON_PATH,
+) -> None:
+    icon = load_position_marker_icon(icon_path)
+    if icon is None:
+        radius = max(5, int(round(target_edge * 0.22)))
+        cv2.circle(image, point, radius, (0, 0, 255), -1, cv2.LINE_AA)
+        return
+
+    _overlay_bgra_icon(image, icon, point, target_edge=max(12, int(target_edge)))
+
+
+def _overlay_bgra_icon(
+    image: np.ndarray,
+    icon: np.ndarray,
+    point: tuple[int, int],
+    target_edge: int,
+) -> None:
+    height, width = icon.shape[:2]
+    scale = float(target_edge) / max(height, width, 1)
+    if scale != 1.0:
+        icon = cv2.resize(
+            icon,
+            (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+            interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR,
+        )
+        height, width = icon.shape[:2]
+
+    x0 = int(round(point[0] - width / 2))
+    y0 = int(round(point[1] - height / 2))
+    x1 = x0 + width
+    y1 = y0 + height
+    clip_x0 = max(0, x0)
+    clip_y0 = max(0, y0)
+    clip_x1 = min(image.shape[1], x1)
+    clip_y1 = min(image.shape[0], y1)
+    if clip_x0 >= clip_x1 or clip_y0 >= clip_y1:
+        return
+
+    icon_x0 = clip_x0 - x0
+    icon_y0 = clip_y0 - y0
+    icon_x1 = icon_x0 + (clip_x1 - clip_x0)
+    icon_y1 = icon_y0 + (clip_y1 - clip_y0)
+
+    icon_patch = icon[icon_y0:icon_y1, icon_x0:icon_x1]
+    alpha = icon_patch[:, :, 3:4].astype(np.float32) / 255.0
+    if np.count_nonzero(alpha) == 0:
+        return
+
+    image_patch = image[clip_y0:clip_y1, clip_x0:clip_x1].astype(np.float32)
+    blended = alpha * icon_patch[:, :, :3].astype(np.float32) + (1.0 - alpha) * image_patch
+    image[clip_y0:clip_y1, clip_x0:clip_x1] = blended.astype(np.uint8)

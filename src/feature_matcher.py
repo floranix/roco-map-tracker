@@ -8,8 +8,9 @@ from src.utils import AppConfig
 class FeatureMatcher:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
-        self.detector = self._create_detector(config.feature_type.lower())
-        self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+        self.feature_type = config.feature_type.lower()
+        self.detector = self._create_detector(self.feature_type)
+        self.matcher = cv2.BFMatcher(self._matcher_norm(self.feature_type), crossCheck=False)
 
     def detect_and_compute(self, image, mask=None):
         keypoints, descriptors = self.detector.detectAndCompute(image, mask)
@@ -54,4 +55,12 @@ class FeatureMatcher:
             return cv2.ORB_create(nfeatures=self.config.orb_nfeatures)
         if feature_type == "akaze":
             return cv2.AKAZE_create()
+        if feature_type == "sift":
+            return cv2.SIFT_create(nfeatures=self.config.sift_nfeatures)
         raise ValueError(f"Unsupported feature type: {self.config.feature_type}")
+
+    @staticmethod
+    def _matcher_norm(feature_type: str) -> int:
+        if feature_type == "sift":
+            return cv2.NORM_L2
+        return cv2.NORM_HAMMING

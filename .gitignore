@@ -6,8 +6,4 @@ __pycache__/
 outputs/
 .DS_Store
 tmp_*/
-data/rocom_17173/tiles_z13/
-data/rocom_17173/bootstrap.js
-data/rocom_17173/bundle.js
-data/rocom_17173/page.html
-data/rocom_17173/rocom-shijie.jpg
+data/rocom_biliwiki/

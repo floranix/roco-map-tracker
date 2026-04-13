@@ -14,6 +14,9 @@ import numpy as np
 
 
 DEFAULT_CATEGORY_COLOR = (60, 220, 255)
+DEFAULT_MARKER_EDGE = 20
+MAX_MARKER_EDGE = 42
+MARKER_SCALE_BASELINE = 0.1
 
 
 @dataclass
@@ -74,6 +77,8 @@ class PoiOverlay:
         tile_y_range: tuple[int, int] | None = None,
         tile_size: int = 256,
         pixel_scale: float = 1.0,
+        pixel_scale_x: float | None = None,
+        pixel_scale_y: float | None = None,
         pixel_offset_x: float = 0.0,
         pixel_offset_y: float = 0.0,
     ) -> None:
@@ -87,6 +92,8 @@ class PoiOverlay:
         self.tile_y_range = tile_y_range
         self.tile_size = tile_size
         self.pixel_scale = float(pixel_scale)
+        self.pixel_scale_x = float(pixel_scale_x) if pixel_scale_x is not None else float(pixel_scale)
+        self.pixel_scale_y = float(pixel_scale_y) if pixel_scale_y is not None else float(pixel_scale)
         self.pixel_offset_x = float(pixel_offset_x)
         self.pixel_offset_y = float(pixel_offset_y)
         self.render_scale_x = 1.0
@@ -270,8 +277,8 @@ class PoiOverlay:
             return self._project_web_mercator_point(longitude, latitude, image_width, image_height)
 
         if self.projection_type == "pixel_space":
-            x = int(round((longitude * self.pixel_scale + self.pixel_offset_x) * self.render_scale_x))
-            y = int(round((latitude * self.pixel_scale + self.pixel_offset_y) * self.render_scale_y))
+            x = int(round((longitude * self.pixel_scale_x + self.pixel_offset_x) * self.render_scale_x))
+            y = int(round((latitude * self.pixel_scale_y + self.pixel_offset_y) * self.render_scale_y))
             if x < 0 or y < 0 or x >= image_width or y >= image_height:
                 return None
             return x, y
@@ -377,14 +384,17 @@ class PoiOverlay:
         return ranked[:label_limit]
 
     def _draw_marker(self, image: np.ndarray, record: PoiRecord, point: tuple[int, int]) -> None:
+        marker_edge = self._marker_edge_pixels()
         icon = self._load_icon(record)
         if icon is not None:
-            self._overlay_icon(image, icon, point)
+            self._overlay_icon(image, icon, point, target_edge=marker_edge)
             return
 
         color = self._category_color(record.category_id)
-        cv2.circle(image, point, 5, (0, 0, 0), -1, cv2.LINE_AA)
-        cv2.circle(image, point, 4, color, -1, cv2.LINE_AA)
+        outer_radius = max(5, int(round(marker_edge * 0.28)))
+        inner_radius = max(4, outer_radius - 2)
+        cv2.circle(image, point, outer_radius, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(image, point, inner_radius, color, -1, cv2.LINE_AA)
 
     def _draw_label(
         self,
@@ -466,16 +476,29 @@ class PoiOverlay:
             icon = np.dstack([icon, alpha])
         return icon
 
+    def _marker_edge_pixels(self) -> int:
+        render_scale = max(
+            1e-6,
+            (abs(float(self.render_scale_x)) + abs(float(self.render_scale_y))) / 2.0,
+        )
+        zoom_multiplier = max(1.0, math.sqrt(render_scale / MARKER_SCALE_BASELINE))
+        marker_edge = int(round(DEFAULT_MARKER_EDGE * zoom_multiplier))
+        return max(DEFAULT_MARKER_EDGE, min(MAX_MARKER_EDGE, marker_edge))
+
     @staticmethod
-    def _overlay_icon(image: np.ndarray, icon: np.ndarray, point: tuple[int, int]) -> None:
-        max_edge = 20
+    def _overlay_icon(
+        image: np.ndarray,
+        icon: np.ndarray,
+        point: tuple[int, int],
+        target_edge: int = DEFAULT_MARKER_EDGE,
+    ) -> None:
         height, width = icon.shape[:2]
-        scale = min(1.0, max_edge / max(height, width, 1))
+        scale = float(target_edge) / max(height, width, 1)
         if scale != 1.0:
             icon = cv2.resize(
                 icon,
                 (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
-                interpolation=cv2.INTER_AREA,
+                interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR,
             )
             height, width = icon.shape[:2]
 
