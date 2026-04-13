@@ -4,18 +4,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
+from src.collectible_materials import ACTIVE_COLLECTIBLE_MATERIALS, collectible_ids_for_kind
 from src.poi_overlay import PoiCategory, PoiRecord
 from src.resource_routes import (
-    RESOURCE_ROUTE_MODE_ORE,
-    RESOURCE_ROUTE_MODE_ORE_AND_PLANT,
-    RESOURCE_ROUTE_MODE_PLANT,
     build_resource_route_plan,
     build_route_cache_signature,
-    infer_resource_kind,
-    infer_resource_kind_from_texts,
     load_route_plan_cache,
+    render_resource_route_plan_viewport,
     route_cache_path,
     save_route_plan_cache,
+    summarize_selection_label,
 )
 
 
@@ -32,42 +32,12 @@ class StubOverlay:
 
 
 class ResourceRoutesTestCase(unittest.TestCase):
-    def test_infer_resource_kind_recognizes_ore_and_plant_categories(self) -> None:
-        ore_category = PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿石")
-        plant_category = PoiCategory(id=705, title="向阳花", group_id=2, group_title="花草")
-        categories = {
-            ore_category.id: ore_category,
-            plant_category.id: plant_category,
-        }
+    def test_collectible_material_list_matches_expected_count(self) -> None:
+        self.assertEqual(len(ACTIVE_COLLECTIBLE_MATERIALS), 34)
+        self.assertEqual(len(collectible_ids_for_kind("mineral")), 4)
+        self.assertEqual(len(collectible_ids_for_kind("plant")), 30)
 
-        ore_record = PoiRecord(
-            id="ore",
-            title="黑晶琉璃",
-            category_id=701,
-            longitude=100,
-            latitude=100,
-        )
-        plant_record = PoiRecord(
-            id="plant",
-            title="向阳花",
-            category_id=705,
-            longitude=120,
-            latitude=100,
-        )
-
-        self.assertEqual(infer_resource_kind(ore_record, categories), RESOURCE_ROUTE_MODE_ORE)
-        self.assertEqual(infer_resource_kind(plant_record, categories), RESOURCE_ROUTE_MODE_PLANT)
-        self.assertEqual(
-            infer_resource_kind_from_texts(
-                title="无花果树",
-                category_title="",
-                resolved_category_title="",
-                group_title="",
-            ),
-            RESOURCE_ROUTE_MODE_PLANT,
-        )
-
-    def test_build_resource_route_plan_splits_far_clusters(self) -> None:
+    def test_build_resource_route_plan_filters_by_selected_material_ids(self) -> None:
         overlay = StubOverlay()
         records = [
             PoiRecord(id="ore_a", title="黑晶琉璃", category_id=701, longitude=120, latitude=120),
@@ -76,10 +46,10 @@ class ResourceRoutesTestCase(unittest.TestCase):
             PoiRecord(id="plant_b", title="海桑花", category_id=721, longitude=800, latitude=780),
         ]
         categories = {
-            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿石"),
-            702: PoiCategory(id=702, title="黄石榴石", group_id=1, group_title="矿石"),
-            705: PoiCategory(id=705, title="向阳花", group_id=2, group_title="花草"),
-            721: PoiCategory(id=721, title="海桑花", group_id=2, group_title="花草"),
+            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿物"),
+            702: PoiCategory(id=702, title="黄石榴石", group_id=1, group_title="矿物"),
+            705: PoiCategory(id=705, title="向阳花", group_id=2, group_title="植物"),
+            721: PoiCategory(id=721, title="海桑花", group_id=2, group_title="植物"),
         }
 
         plan = build_resource_route_plan(
@@ -88,23 +58,25 @@ class ResourceRoutesTestCase(unittest.TestCase):
             overlay=overlay,
             map_width=1024,
             map_height=1024,
-            mode=RESOURCE_ROUTE_MODE_ORE_AND_PLANT,
+            selected_category_ids=[701, 705, 721],
+            selection_label="自定义素材",
             start_xy=(100, 100),
             source_label="测试数据",
         )
 
-        self.assertEqual(plan.total_points, 4)
-        self.assertEqual(len(plan.segments), 2)
+        self.assertEqual(plan.total_points, 3)
+        self.assertEqual(plan.selected_category_ids, [701, 705, 721])
+        self.assertEqual(plan.selection_label, "自定义素材")
         self.assertEqual(plan.segments[0].points[0].id, "ore_a")
 
     def test_route_cache_roundtrip(self) -> None:
         overlay = StubOverlay()
         categories = {
-            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿石"),
+            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿物"),
         }
         records = [
             PoiRecord(id="ore_a", title="黑晶琉璃", category_id=701, longitude=120, latitude=120),
-            PoiRecord(id="ore_b", title="黄石榴石", category_id=701, longitude=180, latitude=120),
+            PoiRecord(id="ore_b", title="黑晶琉璃", category_id=701, longitude=180, latitude=120),
         ]
         plan = build_resource_route_plan(
             records=records,
@@ -112,12 +84,13 @@ class ResourceRoutesTestCase(unittest.TestCase):
             overlay=overlay,
             map_width=512,
             map_height=512,
-            mode=RESOURCE_ROUTE_MODE_ORE,
+            selected_category_ids=[701],
+            selection_label="黑晶琉璃",
             source_label="缓存测试",
         )
 
         signature = build_route_cache_signature(
-            mode=RESOURCE_ROUTE_MODE_ORE,
+            selected_category_ids=[701],
             source_path=str(overlay.pois_path),
             source_mtime_ns=123,
             map_path="data/full_map.png",
@@ -142,7 +115,42 @@ class ResourceRoutesTestCase(unittest.TestCase):
         assert restored is not None
         self.assertTrue(restored.cached)
         self.assertEqual(restored.total_points, plan.total_points)
-        self.assertEqual(len(restored.segments), len(plan.segments))
+        self.assertEqual(restored.selected_category_ids, [701])
+
+    def test_summarize_selection_label(self) -> None:
+        self.assertEqual(summarize_selection_label([701]), "黑晶琉璃")
+        self.assertEqual(summarize_selection_label([701, 702, 703]), "黑晶琉璃、黄石榴石、蓝晶碧玺")
+        self.assertEqual(summarize_selection_label([701, 702, 703, 704]), "已选 4 种素材")
+
+    def test_render_resource_route_plan_viewport_only_draws_visible_region(self) -> None:
+        overlay = StubOverlay()
+        categories = {
+            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿物"),
+            705: PoiCategory(id=705, title="向阳花", group_id=2, group_title="植物"),
+        }
+        records = [
+            PoiRecord(id="ore_a", title="黑晶琉璃", category_id=701, longitude=80, latitude=80),
+            PoiRecord(id="plant_a", title="向阳花", category_id=705, longitude=120, latitude=120),
+        ]
+        plan = build_resource_route_plan(
+            records=records,
+            categories=categories,
+            overlay=overlay,
+            map_width=256,
+            map_height=256,
+            selected_category_ids=[701, 705],
+            selection_label="测试素材",
+            source_label="测试数据",
+        )
+
+        canvas = np.zeros((40, 40, 3), dtype=np.uint8)
+        rendered = render_resource_route_plan_viewport(
+            canvas,
+            plan,
+            scale=1.0,
+            viewport_origin=(60, 60),
+        )
+        self.assertGreater(int(rendered.sum()), 0)
 
 
 if __name__ == "__main__":

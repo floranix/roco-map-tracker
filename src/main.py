@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import cv2
 
@@ -19,14 +19,18 @@ from src.utils import (
     draw_localization,
     ensure_directory,
     guess_poi_categories_path,
-    list_image_files,
     load_config,
     load_image,
     result_json,
 )
 
 
-DEFAULT_CONFIG_PATH = "configs/rocom_17173.yaml" if Path("configs/rocom_17173.yaml").exists() else "configs/default.yaml"
+if Path("configs/rocom_tracker.yaml").exists():
+    DEFAULT_CONFIG_PATH = "configs/rocom_tracker.yaml"
+elif Path("configs/rocom_17173.yaml").exists():
+    DEFAULT_CONFIG_PATH = "configs/rocom_17173.yaml"
+else:
+    DEFAULT_CONFIG_PATH = "configs/default.yaml"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,8 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH, help="YAML 配置文件路径")
     parser.add_argument("--map", dest="map_path", help="覆盖配置中的完整地图路径")
     parser.add_argument("--frame", help="单张局部截图路径")
-    parser.add_argument("--frames-dir", help="连续截图文件夹路径")
-    parser.add_argument("--video", help="视频文件路径")
     parser.add_argument("--screen-region", help="屏幕采集区域，格式为 x,y,w,h")
     parser.add_argument("--capture-interval-ms", type=int, help="屏幕区域采集间隔（毫秒）")
     parser.add_argument("--output-dir", help="可视化结果输出目录")
@@ -55,7 +57,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    if args.gui or not any([args.frame, args.frames_dir, args.video, args.screen_region]):
+    if args.gui or not any([args.frame, args.screen_region]):
         launch_gui()
         return 0
 
@@ -116,7 +118,7 @@ def main() -> int:
                 cv2.imwrite(str(output_path), visualization)
             if args.visualize:
                 cv2.imshow("定位结果", visualization)
-                if cv2.waitKey(1 if (args.video or args.screen_region) else 0) & 0xFF == ord("q"):
+                if cv2.waitKey(1 if args.screen_region else 0) & 0xFF == ord("q"):
                     break
 
     if args.visualize:
@@ -130,32 +132,10 @@ def iterate_frames(args, config):
         yield frame_path.stem, load_image(frame_path)
         return
 
-    if args.frames_dir:
-        for image_path in list_image_files(args.frames_dir):
-            yield image_path.stem, load_image(image_path)
-        return
-
-    if args.screen_region:
-        yield from iterate_screen_region_frames(
-            config.capture_region or args.screen_region,
-            interval_ms=config.capture_interval_ms,
-        )
-        return
-
-    capture = cv2.VideoCapture(args.video)
-    if not capture.isOpened():
-        raise RuntimeError(f"无法打开视频文件：{args.video}")
-
-    frame_index = 0
-    try:
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            yield f"frame_{frame_index:06d}", frame
-            frame_index += 1
-    finally:
-        capture.release()
+    yield from iterate_screen_region_frames(
+        config.capture_region or args.screen_region,
+        interval_ms=config.capture_interval_ms,
+    )
 
 
 def build_poi_overlay(config):

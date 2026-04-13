@@ -39,7 +39,9 @@
 - 丢失后的重定位策略已做升级：
   - 连续失败 2 帧后会主动放弃局部搜索，直接切回全局重定位
   - 失败继续累计时，会自动扩大全局尺度、增加模板候选和分块候选，让重定位更积极
-- 已支持按矩形区域持续屏幕采集。
+- 已支持两种输入方式：
+  - 单张截图
+  - 按矩形区域持续屏幕采集
 - 已把“屏幕采集”和“识别”拆成异步流水线：
   - 一个线程抓屏
   - 一个线程识别
@@ -48,20 +50,21 @@
 - GUI 已支持：
   - 地图缩放
   - 滚动浏览
-  - 点位按分类/关键词筛选
-  - 资源点位独立显示
+  - biliwiki 采集点独立显示
+  - 34 种采集素材多选
+  - 一键全选 / 只选矿物 / 只选植物
+  - 采集点位不需要手动传入，默认直接使用 wiki 同步后的本地缓存
   - 用 `CheckBox` 控制“开始/停止识别”
   - 识别运行期间持续跟随当前位置刷新地图，不是只在单次结果到达时刷新一次
 - 已移除 OpenCV 中文乱码 `?` 叠字，不再在地图上直接画中文。
-- 资源点位已支持两类数据源切换：
-  - `17173`
-  - `biliwiki`
-- 默认资源数据源已切到 `biliwiki`。
 - `biliwiki` 资源点位已支持站点原始 icon 展示。
-- 已支持资源路线生成：
-  - `矿石`
-  - `植物`
-  - `矿石+植物`
+- biliwiki 采集点已改成自动同步 wiki 最新数据并本地缓存：
+  - 当前实际接入 `34` 种可用采集素材
+  - 已补入旧快照里缺失的 `幽幽鬼火`
+- 地图显示已改成视口渲染：
+  - 缩放和滚动时只重绘当前可见区域
+  - 不再整张图连同全部点位一起重画，地图交互更流畅
+- 已支持按“当前勾选素材”生成资源路线，不再依赖旧的矿石/植物模式推断
 - 路线支持：
   - 自动拆成一条或多条
   - 对远距离点簇拆分
@@ -109,7 +112,7 @@
 
 1. 打开 GUI
 2. 选择一块小地图屏幕区域
-3. 选择资源来源和资源路线
+3. 勾选需要显示/规划的采集素材
 4. 勾选“启用识别”
 5. 玩家沿着资源路线移动时，地图上持续更新当前位置
 
@@ -179,7 +182,7 @@
 
 ## 关键文件
 
-- `configs/rocom_17173.yaml`：当前主配置
+- `configs/rocom_tracker.yaml`：当前默认配置入口
 - `src/preprocess.py`：小地图裁剪、圆区遮罩、干扰抑制
 - `src/global_localizer.py`：全局定位核心
 - `src/tracker.py`：局部跟踪与状态切换
@@ -187,8 +190,9 @@
 - `src/async_frame_pipeline.py`：异步采集/识别流水线
 - `src/gui.py`：当前主 GUI
 - `src/poi_overlay.py`：点位投影、筛选、icon 绘制
+- `src/collectible_materials.py`：34 种 biliwiki 采集素材清单
 - `src/resource_routes.py`：资源路线生成与缓存
-- `src/resource_sources.py`：`17173` / `biliwiki` 资源数据源切换
+- `src/resource_sources.py`：biliwiki 采集点同步、缓存与分类生成
 - `src/map_alignment.py`：`17173` 与 `biliwiki` 底图坐标对齐
 - `src/utils.py`：配置结构、结果展示与辅助函数
 - `tests/test_pipeline.py`：识别流程测试
@@ -223,13 +227,13 @@ python main.py --gui
 命令行单图：
 
 ```bash
-python main.py --config configs/rocom_17173.yaml --frame /path/to/image.png --save-visualizations
+python main.py --config configs/rocom_tracker.yaml --frame /path/to/image.png --save-visualizations
 ```
 
 命令行持续屏幕采集：
 
 ```bash
-python main.py --config configs/rocom_17173.yaml --screen-region 1800,260,220,220 --capture-interval-ms 250 --visualize
+python main.py --config configs/rocom_tracker.yaml --screen-region 1800,260,220,220 --capture-interval-ms 250 --visualize
 ```
 
 ## 提交建议

@@ -11,26 +11,9 @@ from typing import Mapping
 import cv2
 import numpy as np
 
+from src.collectible_materials import collectible_material_by_id
 from src.poi_overlay import PoiCategory, PoiOverlay, PoiRecord
 
-
-RESOURCE_ROUTE_MODE_NONE = "none"
-RESOURCE_ROUTE_MODE_ORE = "ore"
-RESOURCE_ROUTE_MODE_PLANT = "plant"
-RESOURCE_ROUTE_MODE_ORE_AND_PLANT = "ore_and_plant"
-RESOURCE_ROUTE_MODES = {
-    RESOURCE_ROUTE_MODE_NONE,
-    RESOURCE_ROUTE_MODE_ORE,
-    RESOURCE_ROUTE_MODE_PLANT,
-    RESOURCE_ROUTE_MODE_ORE_AND_PLANT,
-}
-
-RESOURCE_ROUTE_MODE_LABELS = {
-    RESOURCE_ROUTE_MODE_NONE: "关闭",
-    RESOURCE_ROUTE_MODE_ORE: "矿石",
-    RESOURCE_ROUTE_MODE_PLANT: "植物",
-    RESOURCE_ROUTE_MODE_ORE_AND_PLANT: "矿石+植物",
-}
 
 ROUTE_SEGMENT_COLORS = [
     (56, 84, 255),
@@ -41,10 +24,7 @@ ROUTE_SEGMENT_COLORS = [
     (255, 114, 196),
 ]
 
-ORE_KEYWORDS = ("矿", "晶", "石", "琉璃", "刚玉", "碧玺", "骨片")
-PLANT_KEYWORDS = ("花", "草", "果", "树", "菌", "菇", "兰", "珊瑚", "耳")
-PLANT_GROUP_TITLES = {"花草", "果树"}
-ORE_GROUP_TITLES = {"矿石"}
+ROUTE_SELECTION_NONE = "none"
 
 
 @dataclass
@@ -56,7 +36,7 @@ class ResourceRoutePoint:
     latitude: float
     x: float
     y: float
-    resource_kind: str
+    material_kind: str
 
 
 @dataclass
@@ -67,7 +47,8 @@ class ResourceRouteSegment:
 
 @dataclass
 class ResourceRoutePlan:
-    mode: str
+    selection_label: str
+    selected_category_ids: list[int]
     source_path: str
     source_label: str
     total_points: int
@@ -77,14 +58,15 @@ class ResourceRoutePlan:
 
     def text(self) -> str:
         return (
-            f"路线: {resource_route_mode_label(self.mode)} | "
+            f"路线: {self.selection_label} | "
             f"{len(self.segments)} 条 | {self.total_points} 点 | "
             f"总长 {self.total_distance:.0f}px | 来源: {self.source_label}"
         )
 
     def to_dict(self) -> dict:
         return {
-            "mode": self.mode,
+            "selection_label": self.selection_label,
+            "selected_category_ids": self.selected_category_ids,
             "source_path": self.source_path,
             "source_label": self.source_label,
             "total_points": self.total_points,
@@ -110,7 +92,8 @@ class ResourceRoutePlan:
                 )
             )
         return ResourceRoutePlan(
-            mode=str(payload.get("mode") or RESOURCE_ROUTE_MODE_NONE),
+            selection_label=str(payload.get("selection_label") or "已选素材"),
+            selected_category_ids=[int(value) for value in payload.get("selected_category_ids", [])],
             source_path=str(payload.get("source_path") or ""),
             source_label=str(payload.get("source_label") or "当前点位"),
             total_points=int(payload.get("total_points") or 0),
@@ -120,22 +103,20 @@ class ResourceRoutePlan:
         )
 
 
-def resource_route_mode_label(mode: str) -> str:
-    return RESOURCE_ROUTE_MODE_LABELS.get(mode, mode)
-
-
 def build_resource_route_plan(
     records: list[PoiRecord],
     categories: Mapping[int, PoiCategory],
     overlay: PoiOverlay,
     map_width: int,
     map_height: int,
-    mode: str,
+    selected_category_ids: list[int],
+    selection_label: str,
     start_xy: tuple[float, float] | None = None,
     source_label: str = "当前点位",
 ) -> ResourceRoutePlan:
-    if mode not in RESOURCE_ROUTE_MODES or mode == RESOURCE_ROUTE_MODE_NONE:
-        raise ValueError("请先选择需要生成路线的资源类型。")
+    normalized_ids = sorted({int(category_id) for category_id in selected_category_ids})
+    if not normalized_ids:
+        raise ValueError("请先选择需要生成路线的采集素材。")
 
     points = _collect_route_points(
         records=records,
@@ -143,15 +124,16 @@ def build_resource_route_plan(
         overlay=overlay,
         map_width=map_width,
         map_height=map_height,
-        mode=mode,
+        selected_category_ids=normalized_ids,
     )
     if not points:
-        raise ValueError("当前点位数据中没有匹配的资源点。")
+        raise ValueError("当前点位数据中没有匹配的采集素材点。")
 
     segments = _build_route_segments(points, start_xy=start_xy)
     total_distance = sum(segment.distance for segment in segments)
     return ResourceRoutePlan(
-        mode=mode,
+        selection_label=selection_label,
+        selected_category_ids=normalized_ids,
         source_path=str(overlay.pois_path),
         source_label=source_label,
         total_points=len(points),
@@ -165,10 +147,26 @@ def render_resource_route_plan(
     plan: ResourceRoutePlan | None,
     scale: float = 1.0,
 ) -> np.ndarray:
+    return render_resource_route_plan_viewport(
+        image=image,
+        plan=plan,
+        scale=scale,
+        viewport_origin=(0, 0),
+    )
+
+
+def render_resource_route_plan_viewport(
+    image: np.ndarray,
+    plan: ResourceRoutePlan | None,
+    scale: float = 1.0,
+    viewport_origin: tuple[int, int] = (0, 0),
+) -> np.ndarray:
     if plan is None:
         return image
 
     canvas = image.copy()
+    viewport_x, viewport_y = viewport_origin
+    margin = 16
     for segment_index, segment in enumerate(plan.segments):
         if not segment.points:
             continue
@@ -181,32 +179,50 @@ def render_resource_route_plan(
             ],
             dtype=np.int32,
         )
+        min_x = int(np.min(scaled_points[:, 0]))
+        max_x = int(np.max(scaled_points[:, 0]))
+        min_y = int(np.min(scaled_points[:, 1]))
+        max_y = int(np.max(scaled_points[:, 1]))
+        if (
+            max_x < viewport_x - margin
+            or max_y < viewport_y - margin
+            or min_x >= viewport_x + canvas.shape[1] + margin
+            or min_y >= viewport_y + canvas.shape[0] + margin
+        ):
+            continue
 
-        if len(scaled_points) >= 2:
+        local_points = scaled_points.copy()
+        local_points[:, 0] -= viewport_x
+        local_points[:, 1] -= viewport_y
+
+        for point_xy in local_points:
+            point_tuple = tuple(int(value) for value in point_xy)
+            cv2.circle(canvas, point_tuple, 4, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(canvas, point_tuple, 3, color, -1, cv2.LINE_AA)
+
+        if len(local_points) >= 2:
             cv2.polylines(
                 canvas,
-                [scaled_points.reshape(-1, 1, 2)],
+                [local_points.reshape(-1, 1, 2)],
                 isClosed=False,
                 color=color,
                 thickness=3,
                 lineType=cv2.LINE_AA,
             )
 
-        start_point = tuple(int(value) for value in scaled_points[0])
-        cv2.circle(canvas, start_point, 8, (255, 255, 255), -1, cv2.LINE_AA)
-        cv2.circle(canvas, start_point, 6, color, -1, cv2.LINE_AA)
-
-        for point in scaled_points[1:]:
-            point_xy = tuple(int(value) for value in point)
-            cv2.circle(canvas, point_xy, 4, (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(canvas, point_xy, 3, color, -1, cv2.LINE_AA)
+        start_point = tuple(int(value) for value in local_points[0])
+        end_point = tuple(int(value) for value in local_points[-1])
+        cv2.circle(canvas, start_point, 9, (255, 255, 255), -1, cv2.LINE_AA)
+        cv2.circle(canvas, start_point, 7, color, -1, cv2.LINE_AA)
+        cv2.circle(canvas, end_point, 6, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(canvas, end_point, 4, color, -1, cv2.LINE_AA)
 
     return canvas
 
 
 def build_route_cache_signature(
     *,
-    mode: str,
+    selected_category_ids: list[int],
     source_path: str,
     source_mtime_ns: int,
     map_path: str,
@@ -222,8 +238,8 @@ def build_route_cache_signature(
     pixel_offset_y: float,
 ) -> dict:
     return {
-        "version": 1,
-        "mode": mode,
+        "version": 2,
+        "selected_category_ids": sorted(int(value) for value in selected_category_ids),
         "source_path": source_path,
         "source_mtime_ns": int(source_mtime_ns),
         "map_path": map_path,
@@ -267,43 +283,18 @@ def load_route_plan_cache(cache_path: str | Path, signature: dict) -> ResourceRo
     return ResourceRoutePlan.from_dict(payload.get("plan") or {})
 
 
-def infer_resource_kind(record: PoiRecord, categories: Mapping[int, PoiCategory]) -> str | None:
-    category = categories.get(record.category_id)
-    category_title = category.title if category is not None else record.category_title
-    group_title = category.group_title if category is not None else ""
-    return infer_resource_kind_from_texts(
-        title=record.title,
-        category_title=record.category_title,
-        resolved_category_title=category_title,
-        group_title=group_title,
-    )
+def summarize_selection_label(selected_category_ids: list[int]) -> str:
+    normalized_ids = sorted({int(value) for value in selected_category_ids})
+    if not normalized_ids:
+        return "未选素材"
 
-
-def infer_resource_kind_from_texts(
-    *,
-    title: str,
-    category_title: str,
-    resolved_category_title: str,
-    group_title: str,
-) -> str | None:
-    texts = [
-        str(title or ""),
-        str(category_title or ""),
-        str(resolved_category_title or ""),
-        str(group_title or ""),
-    ]
-
-    if group_title in ORE_GROUP_TITLES:
-        return RESOURCE_ROUTE_MODE_ORE
-    if group_title in PLANT_GROUP_TITLES:
-        return RESOURCE_ROUTE_MODE_PLANT
-
-    joined = " ".join(texts)
-    if any(keyword in joined for keyword in ORE_KEYWORDS):
-        return RESOURCE_ROUTE_MODE_ORE
-    if any(keyword in joined for keyword in PLANT_KEYWORDS):
-        return RESOURCE_ROUTE_MODE_PLANT
-    return None
+    materials = [collectible_material_by_id(category_id) for category_id in normalized_ids]
+    names = [material.name for material in materials if material is not None]
+    if not names:
+        return f"已选 {len(normalized_ids)} 种素材"
+    if len(names) <= 3:
+        return "、".join(names)
+    return f"已选 {len(names)} 种素材"
 
 
 def _collect_route_points(
@@ -313,20 +304,14 @@ def _collect_route_points(
     overlay: PoiOverlay,
     map_width: int,
     map_height: int,
-    mode: str,
+    selected_category_ids: list[int],
 ) -> list[ResourceRoutePoint]:
+    selected = set(selected_category_ids)
     route_points = []
     dedupe_keys = set()
 
     for record in records:
-        resource_kind = infer_resource_kind(record, categories)
-        if resource_kind is None:
-            continue
-        if mode == RESOURCE_ROUTE_MODE_ORE_AND_PLANT:
-            matched = resource_kind in {RESOURCE_ROUTE_MODE_ORE, RESOURCE_ROUTE_MODE_PLANT}
-        else:
-            matched = resource_kind == mode
-        if not matched:
+        if int(record.category_id) not in selected:
             continue
 
         projected = overlay.project_point(
@@ -338,8 +323,16 @@ def _collect_route_points(
         if projected is None:
             continue
 
+        material = collectible_material_by_id(record.category_id)
+        category = categories.get(record.category_id)
+        title = str(record.title or (category.title if category is not None else ""))
+        if not title and material is not None:
+            title = material.name
+        if not title:
+            title = f"类型 {record.category_id}"
+
         x, y = projected
-        dedupe_key = (record.title.strip(), record.category_id, int(x), int(y))
+        dedupe_key = (record.category_id, int(x), int(y), title.strip())
         if dedupe_key in dedupe_keys:
             continue
         dedupe_keys.add(dedupe_key)
@@ -347,13 +340,13 @@ def _collect_route_points(
         route_points.append(
             ResourceRoutePoint(
                 id=record.id,
-                title=record.title,
+                title=title,
                 category_id=record.category_id,
                 longitude=record.longitude,
                 latitude=record.latitude,
                 x=float(x),
                 y=float(y),
-                resource_kind=resource_kind,
+                material_kind=material.kind if material is not None else "",
             )
         )
 

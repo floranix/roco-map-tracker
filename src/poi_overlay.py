@@ -142,10 +142,7 @@ class PoiOverlay:
                 note="未选分类",
             )
 
-        matched = self._filter_records(
-            selected_category_ids=selected_category_ids,
-            keyword=options.keyword,
-        )
+        matched = self.match_records(options)
         if not matched:
             return map_image, PoiRenderSummary(
                 total=len(self.records),
@@ -179,6 +176,85 @@ class PoiOverlay:
             rendered=len(points),
         )
         return canvas, summary
+
+    def render_viewport(
+        self,
+        map_image: np.ndarray,
+        options: PoiRenderOptions,
+        viewport_origin: tuple[int, int],
+        full_image_size: tuple[int, int],
+        focus_xy: tuple[float, float] | None = None,
+    ) -> tuple[np.ndarray, PoiRenderSummary | None]:
+        if not options.enabled:
+            return map_image, None
+
+        selected_category_ids = options.selected_category_ids or []
+        if not selected_category_ids:
+            return map_image, PoiRenderSummary(
+                total=len(self.records),
+                matched=0,
+                rendered=0,
+                note="未选分类",
+            )
+
+        matched = self.match_records(options)
+        if not matched:
+            return map_image, PoiRenderSummary(
+                total=len(self.records),
+                matched=0,
+                rendered=0,
+                note="无匹配",
+            )
+
+        viewport_x, viewport_y = viewport_origin
+        full_width, full_height = full_image_size
+        canvas = map_image.copy()
+        points = []
+        margin = 20
+
+        for record in matched[: options.max_points]:
+            point = self.project_point(
+                longitude=record.longitude,
+                latitude=record.latitude,
+                image_width=full_width,
+                image_height=full_height,
+            )
+            if point is None:
+                continue
+
+            local_x = int(point[0] - viewport_x)
+            local_y = int(point[1] - viewport_y)
+            if (
+                local_x < -margin
+                or local_y < -margin
+                or local_x >= canvas.shape[1] + margin
+                or local_y >= canvas.shape[0] + margin
+            ):
+                continue
+
+            local_point = (local_x, local_y)
+            points.append((record, local_point))
+            self._draw_marker(canvas, record, local_point)
+
+        if options.show_labels and points:
+            local_focus = None
+            if focus_xy is not None:
+                local_focus = (focus_xy[0] - viewport_x, focus_xy[1] - viewport_y)
+            for record, point in self._pick_label_records(points, local_focus, options.label_limit):
+                self._draw_label(canvas, record.title, point, record.category_id)
+
+        summary = PoiRenderSummary(
+            total=len(self.records),
+            matched=len(matched),
+            rendered=len(points),
+        )
+        return canvas, summary
+
+    def match_records(self, options: PoiRenderOptions) -> list[PoiRecord]:
+        return self._filter_records(
+            selected_category_ids=options.selected_category_ids or [],
+            keyword=options.keyword,
+        )
 
     def project_point(
         self,

@@ -107,6 +107,32 @@ class PoiOverlayTestCase(unittest.TestCase):
         self.assertEqual(summary.rendered, 1)
         self.assertGreater(int(rendered.sum()), 0)
 
+    def test_render_viewport_only_draws_visible_points(self) -> None:
+        overlay = PoiOverlay(
+            pois_path=self.root / "pois.json",
+            categories_path=self.root / "categories.json",
+            map_bounds=(-1.4, 0.0, 0.0, 1.4),
+        )
+        image = np.zeros((40, 40, 3), dtype=np.uint8)
+
+        rendered, summary = overlay.render_viewport(
+            image,
+            PoiRenderOptions(
+                enabled=True,
+                selected_category_ids=[1001],
+                keyword="B",
+                show_labels=False,
+            ),
+            viewport_origin=(50, 50),
+            full_image_size=(140, 140),
+            focus_xy=None,
+        )
+
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary.matched, 1)
+        self.assertEqual(summary.rendered, 1)
+        self.assertGreater(int(rendered.sum()), 0)
+
     def test_project_point_supports_web_mercator_tiles(self) -> None:
         overlay = PoiOverlay(
             pois_path=self.root / "pois.json",
