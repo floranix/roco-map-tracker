@@ -95,7 +95,15 @@ class GlobalLocalizer:
         content_mask: np.ndarray | None = None,
         search_region: Optional[tuple[int, int, int, int]] = None,
         state: str = "relocalizing",
+        frame_scales: list[float] | None = None,
+        template_scales: list[float] | None = None,
+        template_top_per_scale: int | None = None,
+        template_top_k: int | None = None,
+        template_refine_radius: int | None = None,
+        template_min_score: float | None = None,
+        global_tile_top_k: int | None = None,
     ) -> Optional[LocalizationResult]:
+        active_frame_scales = self._normalize_scales(frame_scales or self.frame_scales)
         if search_region is None:
             map_keypoints = self.map_keypoints
             map_descriptors = self.map_descriptors
@@ -114,10 +122,15 @@ class GlobalLocalizer:
                 content_mask=content_mask,
                 search_region=search_region,
                 state=state,
+                template_scales=template_scales,
+                top_per_scale=template_top_per_scale,
+                top_k=template_top_k,
+                refine_radius=template_refine_radius,
+                min_score=template_min_score,
             )
             best_result = self._update_best_result(best_result, template_result)
 
-        for scale in self.frame_scales:
+        for scale in active_frame_scales:
             scaled_frame = self._resize_frame(frame_gray, scale)
             if scaled_frame is None:
                 continue
@@ -135,6 +148,7 @@ class GlobalLocalizer:
                     frame_descriptors=frame_descriptors,
                     scale=scale,
                     state=state,
+                    top_k=global_tile_top_k,
                 )
                 best_result = self._update_best_result(best_result, tile_result)
 
@@ -187,8 +201,10 @@ class GlobalLocalizer:
         frame_descriptors,
         scale: float,
         state: str,
+        top_k: int | None = None,
     ) -> Optional[LocalizationResult]:
-        if not self.global_tiles or self.global_tile_top_k <= 0:
+        active_top_k = self.global_tile_top_k if top_k is None else max(1, int(top_k))
+        if not self.global_tiles or active_top_k <= 0:
             return None
 
         ranked_tiles = []
@@ -200,7 +216,7 @@ class GlobalLocalizer:
 
         ranked_tiles.sort(key=lambda item: item[0], reverse=True)
         best_result: Optional[LocalizationResult] = None
-        for _match_count, matches, tile in ranked_tiles[: self.global_tile_top_k]:
+        for _match_count, matches, tile in ranked_tiles[:active_top_k]:
             result = self._localize_from_candidate(
                 frame_gray=frame_gray,
                 content_mask=content_mask,

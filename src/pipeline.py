@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -10,6 +11,17 @@ from src.kalman_filter import PositionKalmanFilter
 from src.preprocess import MapPreprocessor
 from src.tracker import LocalTracker
 from src.utils import AppConfig, LocalizationResult, offset_result_geometry
+
+
+@dataclass(frozen=True)
+class RelocalizationOverrides:
+    frame_scales: list[float]
+    template_scales: list[float]
+    template_top_per_scale: int
+    template_top_k: int
+    template_refine_radius: int
+    template_min_score: float
+    global_tile_top_k: int
 
 
 class LocalizationPipeline:
@@ -84,12 +96,20 @@ class LocalizationPipeline:
                 result = None
 
         if result is None:
+            relocalization_overrides = self._build_relocalization_overrides()
             result = self.localizer.localize(
                 frame_gray,
                 frame_mask=prepared_frame.feature_mask,
                 content_mask=prepared_frame.content_mask,
                 search_region=None,
                 state="relocalizing",
+                frame_scales=relocalization_overrides.frame_scales,
+                template_scales=relocalization_overrides.template_scales,
+                template_top_per_scale=relocalization_overrides.template_top_per_scale,
+                template_top_k=relocalization_overrides.template_top_k,
+                template_refine_radius=relocalization_overrides.template_refine_radius,
+                template_min_score=relocalization_overrides.template_min_score,
+                global_tile_top_k=relocalization_overrides.global_tile_top_k,
             )
 
         if result is not None:
@@ -134,3 +154,55 @@ class LocalizationPipeline:
             state=state,
             method="prediction",
         )
+
+    def _build_relocalization_overrides(self) -> RelocalizationOverrides:
+        aggressiveness = self.tracker.relocalization_aggressiveness()
+        frame_scales = list(self.config.global_search_scales)
+        template_scales = list(self.config.template_match_scales)
+        template_top_per_scale = int(self.config.template_match_top_per_scale)
+        template_top_k = int(self.config.template_match_top_k)
+        template_refine_radius = int(self.config.template_match_refine_radius)
+        template_min_score = float(self.config.template_match_min_score)
+        global_tile_top_k = int(self.config.global_tile_top_k)
+
+        if aggressiveness >= 1:
+            frame_scales = self._merge_scales(frame_scales, [0.2, 0.3, 1.8, 2.2])
+            template_scales = self._merge_scales(template_scales, [0.55, 0.6, 1.65, 1.8])
+            template_top_per_scale += 1
+            template_top_k += 3
+            template_refine_radius = int(round(template_refine_radius * 1.5))
+            template_min_score = max(0.58, template_min_score - 0.08)
+            global_tile_top_k += 4
+
+        if aggressiveness >= 2:
+            frame_scales = self._merge_scales(frame_scales, [0.18, 2.5])
+            template_scales = self._merge_scales(template_scales, [0.5, 1.95])
+            template_top_per_scale += 1
+            template_top_k += 2
+            template_refine_radius = int(round(template_refine_radius * 1.35))
+            template_min_score = max(0.52, template_min_score - 0.06)
+            global_tile_top_k += 4
+
+        return RelocalizationOverrides(
+            frame_scales=frame_scales,
+            template_scales=template_scales,
+            template_top_per_scale=template_top_per_scale,
+            template_top_k=template_top_k,
+            template_refine_radius=template_refine_radius,
+            template_min_score=template_min_score,
+            global_tile_top_k=global_tile_top_k,
+        )
+
+    @staticmethod
+    def _merge_scales(base_scales: list[float], extra_scales: list[float]) -> list[float]:
+        merged = []
+        for raw_scale in [*base_scales, *extra_scales]:
+            try:
+                scale = float(raw_scale)
+            except (TypeError, ValueError):
+                continue
+            if scale <= 0:
+                continue
+            if not any(abs(scale - existing) < 1e-6 for existing in merged):
+                merged.append(scale)
+        return merged

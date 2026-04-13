@@ -39,7 +39,7 @@ class LocalTracker:
         current_frame_gray: np.ndarray,
         map_shape: tuple[int, int],
     ) -> Optional[tuple[int, int, int, int]]:
-        if self.memory.last_result is None:
+        if self.memory.last_result is None or self.should_force_global_search():
             return None
 
         predicted_x = self.memory.last_result.x
@@ -76,6 +76,16 @@ class LocalTracker:
 
     def is_lost(self) -> bool:
         return self.memory.lost_frames >= self.max_lost_frames
+
+    def should_force_global_search(self) -> bool:
+        return self.memory.last_result is not None and self.memory.lost_frames >= 2
+
+    def relocalization_aggressiveness(self) -> int:
+        if self.memory.lost_frames >= max(3, self.max_lost_frames // 2):
+            return 2
+        if self.memory.lost_frames >= 2:
+            return 1
+        return 0
 
     def is_result_plausible(
         self,

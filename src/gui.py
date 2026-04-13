@@ -122,6 +122,7 @@ class LocalizationGUI:
         self._map_scale: float = 1.0
         self._map_refresh_pending = False
         self._map_refresh_center = False
+        self._live_map_refresh_interval_ms = 250
         self._last_result: LocalizationResult | None = None
         self._resource_route_plan: ResourceRoutePlan | None = None
         self._resource_route_cache_dir = Path("outputs/route_cache")
@@ -132,6 +133,7 @@ class LocalizationGUI:
         self._bind_refresh_events()
         self._load_config_defaults()
         self.root.after(100, self._poll_results)
+        self.root.after(self._live_map_refresh_interval_ms, self._poll_live_map_refresh)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def run(self) -> None:
@@ -600,7 +602,7 @@ class LocalizationGUI:
                 self._last_result = payload["result"]
                 self.status_var.set(f"正在处理：{payload['frame_name']}")
                 self.map_hint_var.set(payload["message_text"])
-                self._refresh_map_display(center_on_result=self.recognition_enabled_var.get())
+                self._schedule_map_refresh(center_on_result=self.recognition_enabled_var.get())
             elif message_type == "done":
                 self._worker = None
                 self.status_var.set(str(payload))
@@ -612,6 +614,17 @@ class LocalizationGUI:
                 messagebox.showerror("运行错误", str(payload))
 
         self.root.after(100, self._poll_results)
+
+    def _poll_live_map_refresh(self) -> None:
+        if (
+            self.recognition_enabled_var.get()
+            and self._worker is not None
+            and self._worker.is_alive()
+            and self._last_result is not None
+        ):
+            self._schedule_map_refresh(center_on_result=True)
+
+        self.root.after(self._live_map_refresh_interval_ms, self._poll_live_map_refresh)
 
     def _build_runtime_config(self, require_input: bool = True) -> AppConfig:
         config_path = self.config_path_var.get().strip()

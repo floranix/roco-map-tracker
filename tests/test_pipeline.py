@@ -191,6 +191,32 @@ class PipelineTestCase(unittest.TestCase):
         self.assertLess(abs(second.y - 580), 24)
         self.assertIn(second.method, {"global_template_match", "global_feature_match", "global_tile_match"})
 
+    def test_consecutive_failures_escalate_to_global_relocalization(self) -> None:
+        pipeline = LocalizationPipeline(
+            AppConfig(
+                map_path=str(self.map_path),
+                feature_type="orb",
+                min_match_count=8,
+                roi_expand_pixels=60,
+                use_optical_flow=True,
+                use_kalman=False,
+            )
+        )
+
+        source = cv2.imread(str(self.map_path))
+        first = pipeline.process_frame(crop_frame(source, 330, 300))
+        blank = np.zeros((180, 180, 3), dtype=np.uint8)
+        pipeline.process_frame(blank)
+        pipeline.process_frame(blank)
+        second = pipeline.process_frame(crop_frame(source, 610, 580))
+
+        self.assertEqual(first.state, "relocalizing")
+        self.assertFalse(np.isnan(second.x))
+        self.assertFalse(np.isnan(second.y))
+        self.assertLess(abs(second.x - 610), 24)
+        self.assertLess(abs(second.y - 580), 24)
+        self.assertIn(second.method, {"global_template_match", "global_feature_match", "global_tile_match"})
+
     def test_global_localization_with_zoomed_frame(self) -> None:
         pipeline = LocalizationPipeline(
             AppConfig(
