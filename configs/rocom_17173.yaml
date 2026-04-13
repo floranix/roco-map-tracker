@@ -10,7 +10,7 @@ map_tile_y_range:
 map_tile_size: 256
 frame_preprocess_mode: minimap_circle
 minimap_outer_margin: 10
-minimap_center_mask_ratio: 0.22
+minimap_center_mask_ratio: 0.12
 minimap_icon_mask_ratio: 0.18
 minimap_icon_offset_x_ratio: -0.65
 minimap_icon_offset_y_ratio: 0.55
@@ -35,6 +35,27 @@ max_lost_frames: 10
 ratio_test: 0.75
 ransac_threshold: 5.0
 orb_nfeatures: 5000
+max_rotation_degrees: 8.0
+use_template_matching: true
+template_match_map_downsample: 0.25
+template_match_scales:
+  - 0.65
+  - 0.75
+  - 0.85
+  - 0.95
+  - 1.0
+  - 1.05
+  - 1.1
+  - 1.2
+  - 1.35
+  - 1.5
+template_match_top_per_scale: 2
+template_match_top_k: 6
+template_match_refine_radius: 420
+template_match_min_score: 0.72
+template_match_blur_size: 7
+template_color_validation_weight: 0.0
+template_color_validation_min_score: 0.0
 output_dir: outputs/rocom_17173
 save_visualizations: false
 map_bounds:

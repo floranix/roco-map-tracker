@@ -27,6 +27,18 @@ class LocalizationPipeline:
             global_tile_size=config.global_tile_size,
             global_tile_stride=config.global_tile_stride,
             global_tile_top_k=config.global_tile_top_k,
+            max_rotation_degrees=config.max_rotation_degrees,
+            candidate_verification_weight=config.candidate_verification_weight,
+            use_template_matching=config.use_template_matching,
+            template_match_map_downsample=config.template_match_map_downsample,
+            template_match_scales=config.template_match_scales,
+            template_match_top_per_scale=config.template_match_top_per_scale,
+            template_match_top_k=config.template_match_top_k,
+            template_match_refine_radius=config.template_match_refine_radius,
+            template_match_min_score=config.template_match_min_score,
+            template_match_blur_size=config.template_match_blur_size,
+            template_color_validation_weight=config.template_color_validation_weight,
+            template_color_validation_min_score=config.template_color_validation_min_score,
         )
         self.tracker = LocalTracker(
             roi_expand_pixels=config.roi_expand_pixels,
@@ -36,15 +48,28 @@ class LocalizationPipeline:
         self.kalman = PositionKalmanFilter() if config.use_kalman else None
 
     def process_frame(self, frame: np.ndarray) -> LocalizationResult:
-        frame_gray = self.preprocessor.prepare_frame(frame)
+        prepared_frame = self.preprocessor.prepare_frame_bundle(frame)
+        frame_gray = prepared_frame.gray
         search_region = self.tracker.build_search_region(frame_gray, self.map_bundle.gray.shape)
 
         result = None
         if search_region is not None:
-            result = self.localizer.localize(frame_gray, search_region=search_region, state="tracking")
+            result = self.localizer.localize(
+                frame_gray,
+                frame_mask=prepared_frame.feature_mask,
+                content_mask=prepared_frame.content_mask,
+                search_region=search_region,
+                state="tracking",
+            )
 
         if result is None:
-            result = self.localizer.localize(frame_gray, search_region=None, state="relocalizing")
+            result = self.localizer.localize(
+                frame_gray,
+                frame_mask=prepared_frame.feature_mask,
+                content_mask=prepared_frame.content_mask,
+                search_region=None,
+                state="relocalizing",
+            )
 
         if result is not None:
             result = self._apply_smoothing(result)

@@ -20,7 +20,9 @@ STATE_LABELS = {
 METHOD_LABELS = {
     "global_feature_match": "全局特征匹配",
     "global_tile_match": "全局分块匹配",
+    "global_template_match": "全局模板匹配",
     "local_feature_match": "局部特征匹配",
+    "local_template_match": "局部模板匹配",
     "prediction": "运动预测",
 }
 
@@ -35,10 +37,11 @@ class AppConfig:
     map_tile_size: int = 256
     frame_preprocess_mode: str = "none"
     minimap_outer_margin: int = 10
-    minimap_center_mask_ratio: float = 0.22
+    minimap_center_mask_ratio: float = 0.12
     minimap_icon_mask_ratio: float = 0.18
     minimap_icon_offset_x_ratio: float = -0.65
     minimap_icon_offset_y_ratio: float = 0.55
+    minimap_feature_mask_erode: int = 2
     global_search_scales: list[float] = field(
         default_factory=lambda: [1.0, 0.85, 0.7, 0.55, 0.45, 0.35, 0.25, 1.2, 1.4, 1.7, 2.0]
     )
@@ -55,6 +58,20 @@ class AppConfig:
     ratio_test: float = 0.75
     ransac_threshold: float = 5.0
     orb_nfeatures: int = 5000
+    max_rotation_degrees: float = 8.0
+    candidate_verification_weight: float = 0.55
+    use_template_matching: bool = True
+    template_match_map_downsample: float = 0.25
+    template_match_scales: list[float] = field(
+        default_factory=lambda: [0.65, 0.75, 0.85, 0.95, 1.0, 1.05, 1.1, 1.2, 1.35, 1.5]
+    )
+    template_match_top_per_scale: int = 2
+    template_match_top_k: int = 6
+    template_match_refine_radius: int = 420
+    template_match_min_score: float = 0.72
+    template_match_blur_size: int = 7
+    template_color_validation_weight: float = 0.0
+    template_color_validation_min_score: float = 0.0
     output_dir: str = "outputs"
     save_visualizations: bool = False
     map_bounds: list[float] = field(default_factory=list)

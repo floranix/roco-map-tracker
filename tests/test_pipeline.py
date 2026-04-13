@@ -50,6 +50,44 @@ def crop_frame(image: np.ndarray, center_x: int, center_y: int, width: int = 180
     return image[y0 : y0 + height, x0 : x0 + width].copy()
 
 
+def build_minimap_like_frame(frame: np.ndarray) -> np.ndarray:
+    minimap = frame.copy()
+    height, width = minimap.shape[:2]
+    center = (width // 2, height // 2)
+
+    cv2.circle(minimap, center, 16, (255, 255, 255), -1)
+    arrow = np.array(
+        [
+            [center[0] - 20, center[1] + 6],
+            [center[0] + 2, center[1] - 12],
+            [center[0] + 16, center[1] + 4],
+            [center[0] - 2, center[1] + 22],
+        ],
+        dtype=np.int32,
+    )
+    cv2.fillConvexPoly(minimap, arrow, (40, 150, 255))
+    cv2.polylines(minimap, [arrow], True, (255, 255, 255), 3)
+
+    target_marker = np.array([[74, 18], [92, 0], [110, 18], [92, 36]], dtype=np.int32)
+    cv2.fillConvexPoly(minimap, target_marker, (210, 120, 255))
+    cv2.polylines(minimap, [target_marker], True, (255, 255, 255), 2)
+    cv2.circle(minimap, (92, 18), 6, (235, 235, 235), -1)
+
+    cv2.circle(minimap, (138, 142), 16, (255, 255, 255), -1)
+    cv2.circle(minimap, (138, 142), 13, (215, 120, 50), -1)
+    cv2.putText(
+        minimap,
+        "2",
+        (132, 149),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return minimap
+
+
 class PipelineTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -128,6 +166,65 @@ class PipelineTestCase(unittest.TestCase):
         self.assertLess(abs(result.x - 430), 20)
         self.assertLess(abs(result.y - 470), 20)
         self.assertGreater(result.score, 0.25)
+
+    def test_minimap_overlay_frame_avoids_degenerate_false_positive(self) -> None:
+        pipeline = LocalizationPipeline(
+            AppConfig(
+                map_path=str(self.map_path),
+                feature_type="orb",
+                min_match_count=8,
+                roi_expand_pixels=80,
+                use_optical_flow=False,
+                use_kalman=False,
+                frame_preprocess_mode="minimap_circle",
+                global_search_scales=[1.0, 0.85, 0.7, 0.55, 1.2, 1.4],
+            )
+        )
+
+        source = cv2.imread(str(self.map_path))
+        frame = crop_frame(source, 430, 470)
+        minimap_frame = build_minimap_like_frame(frame)
+
+        result = pipeline.process_frame(minimap_frame)
+
+        self.assertNotEqual(result.state, "lost")
+        self.assertFalse(np.isnan(result.x))
+        self.assertFalse(np.isnan(result.y))
+        self.assertLess(abs(result.x - 430), 28)
+        self.assertLess(abs(result.y - 470), 28)
+        self.assertGreater(result.score, 0.2)
+
+    def test_rotated_frame_is_rejected_when_rotation_is_disabled(self) -> None:
+        pipeline = LocalizationPipeline(
+            AppConfig(
+                map_path=str(self.map_path),
+                feature_type="orb",
+                min_match_count=8,
+                roi_expand_pixels=80,
+                use_optical_flow=False,
+                use_kalman=False,
+                global_search_scales=[1.0, 0.85, 0.7, 0.55, 1.25, 1.5],
+                max_rotation_degrees=8.0,
+            )
+        )
+
+        source = cv2.imread(str(self.map_path))
+        frame = crop_frame(source, 430, 470, width=180, height=180)
+        rotation_matrix = cv2.getRotationMatrix2D((90, 90), 25, 1.0)
+        rotated_frame = cv2.warpAffine(
+            frame,
+            rotation_matrix,
+            (180, 180),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0, 0, 0),
+        )
+
+        result = pipeline.process_frame(rotated_frame)
+
+        self.assertEqual(result.state, "relocalizing")
+        self.assertTrue(np.isnan(result.x))
+        self.assertTrue(np.isnan(result.y))
 
 
 if __name__ == "__main__":
