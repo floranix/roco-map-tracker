@@ -25,6 +25,11 @@ ROUTE_SEGMENT_COLORS = [
 ]
 
 ROUTE_SELECTION_NONE = "none"
+ROUTE_CLUSTER_DISTANCE_FACTOR = 1.8
+ROUTE_CLUSTER_DISTANCE_MIN = 96.0
+ROUTE_CLUSTER_DISTANCE_MAX = 240.0
+ROUTE_SEGMENT_GAP_FACTOR = 1.15
+ROUTE_SEGMENT_GAP_MAX = 300.0
 
 
 @dataclass
@@ -240,7 +245,7 @@ def build_route_cache_signature(
     pixel_offset_y: float,
 ) -> dict:
     return {
-        "version": 2,
+        "version": 3,
         "selected_category_ids": sorted(int(value) for value in selected_category_ids),
         "source_path": source_path,
         "source_mtime_ns": int(source_mtime_ns),
@@ -364,31 +369,50 @@ def _build_route_segments(
     if len(points) == 1:
         return [ResourceRouteSegment(points=[points[0]], distance=0.0)]
 
-    clusters = _split_points_into_clusters(points)
+    cluster_distance_limit = _estimate_cluster_distance_limit(points)
+    segment_gap_limit = min(ROUTE_SEGMENT_GAP_MAX, cluster_distance_limit * ROUTE_SEGMENT_GAP_FACTOR)
+
+    clusters = _split_points_into_clusters(points, distance_limit=cluster_distance_limit)
     ordered_clusters = _order_clusters(clusters, start_xy=start_xy)
 
     segments = []
     anchor = start_xy
     for cluster_points in ordered_clusters:
         route_points = _order_points_within_cluster(cluster_points, start_xy=anchor)
-        route_distance = _route_distance(route_points)
-        segments.append(ResourceRouteSegment(points=route_points, distance=route_distance))
-        if route_points:
-            anchor = (route_points[-1].x, route_points[-1].y)
+        for route_segment in _split_route_by_gap(route_points, gap_limit=segment_gap_limit):
+            route_distance = _route_distance(route_segment)
+            segments.append(ResourceRouteSegment(points=route_segment, distance=route_distance))
+            if route_segment:
+                anchor = (route_segment[-1].x, route_segment[-1].y)
 
     return segments
 
 
-def _split_points_into_clusters(points: list[ResourceRoutePoint]) -> list[list[ResourceRoutePoint]]:
+def _estimate_cluster_distance_limit(points: list[ResourceRoutePoint]) -> float:
+    if len(points) <= 1:
+        return ROUTE_CLUSTER_DISTANCE_MIN
+
+    edges = _build_mst_edges(points)
+    if not edges:
+        return ROUTE_CLUSTER_DISTANCE_MIN
+
+    median_edge = float(median(edge[2] for edge in edges))
+    return min(
+        ROUTE_CLUSTER_DISTANCE_MAX,
+        max(ROUTE_CLUSTER_DISTANCE_MIN, median_edge * ROUTE_CLUSTER_DISTANCE_FACTOR),
+    )
+
+
+def _split_points_into_clusters(
+    points: list[ResourceRoutePoint],
+    distance_limit: float,
+) -> list[list[ResourceRoutePoint]]:
     if len(points) <= 2:
         return [sorted(points, key=lambda point: (point.y, point.x))]
 
     edges = _build_mst_edges(points)
     if not edges:
         return [points]
-
-    edge_lengths = [edge[2] for edge in edges]
-    threshold = max(180.0, float(median(edge_lengths)) * 2.8)
 
     parent = list(range(len(points)))
 
@@ -405,7 +429,7 @@ def _split_points_into_clusters(points: list[ResourceRoutePoint]) -> list[list[R
             parent[root_right] = root_left
 
     for left, right, distance in edges:
-        if distance <= threshold:
+        if distance <= distance_limit:
             union(left, right)
 
     groups: dict[int, list[ResourceRoutePoint]] = {}
@@ -490,6 +514,25 @@ def _order_points_within_cluster(
     if len(route) <= 80:
         route = _improve_route_with_2opt(route)
     return route
+
+
+def _split_route_by_gap(
+    points: list[ResourceRoutePoint],
+    gap_limit: float,
+) -> list[list[ResourceRoutePoint]]:
+    if not points:
+        return []
+    if len(points) == 1:
+        return [points]
+
+    segments: list[list[ResourceRoutePoint]] = [[points[0]]]
+    for point in points[1:]:
+        current_segment = segments[-1]
+        if _distance(current_segment[-1], point) > gap_limit:
+            segments.append([point])
+            continue
+        current_segment.append(point)
+    return segments
 
 
 def _improve_route_with_2opt(points: list[ResourceRoutePoint]) -> list[ResourceRoutePoint]:

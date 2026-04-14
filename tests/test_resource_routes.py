@@ -154,6 +154,59 @@ class ResourceRoutesTestCase(unittest.TestCase):
         )
         self.assertGreater(int(rendered.sum()), 0)
 
+    def test_build_resource_route_plan_splits_long_jump_into_multiple_segments(self) -> None:
+        overlay = StubOverlay()
+        categories = {
+            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿物"),
+        }
+        records = [
+            PoiRecord(id="ore_a", title="黑晶琉璃", category_id=701, longitude=80, latitude=80),
+            PoiRecord(id="ore_b", title="黑晶琉璃", category_id=701, longitude=120, latitude=90),
+            PoiRecord(id="ore_c", title="黑晶琉璃", category_id=701, longitude=520, latitude=500),
+            PoiRecord(id="ore_d", title="黑晶琉璃", category_id=701, longitude=560, latitude=520),
+        ]
+
+        plan = build_resource_route_plan(
+            records=records,
+            categories=categories,
+            overlay=overlay,
+            map_width=1024,
+            map_height=1024,
+            selected_category_ids=[701],
+            selection_label="黑晶琉璃",
+            source_label="测试数据",
+        )
+
+        self.assertEqual(len(plan.segments), 2)
+        self.assertEqual([point.id for point in plan.segments[0].points], ["ore_a", "ore_b"])
+        self.assertEqual([point.id for point in plan.segments[1].points], ["ore_c", "ore_d"])
+
+    def test_build_resource_route_plan_keeps_dense_chain_in_single_segment(self) -> None:
+        overlay = StubOverlay()
+        categories = {
+            701: PoiCategory(id=701, title="黑晶琉璃", group_id=1, group_title="矿物"),
+        }
+        records = [
+            PoiRecord(id="ore_a", title="黑晶琉璃", category_id=701, longitude=80, latitude=80),
+            PoiRecord(id="ore_b", title="黑晶琉璃", category_id=701, longitude=140, latitude=85),
+            PoiRecord(id="ore_c", title="黑晶琉璃", category_id=701, longitude=205, latitude=88),
+            PoiRecord(id="ore_d", title="黑晶琉璃", category_id=701, longitude=270, latitude=92),
+        ]
+
+        plan = build_resource_route_plan(
+            records=records,
+            categories=categories,
+            overlay=overlay,
+            map_width=1024,
+            map_height=1024,
+            selected_category_ids=[701],
+            selection_label="黑晶琉璃",
+            source_label="测试数据",
+        )
+
+        self.assertEqual(len(plan.segments), 1)
+        self.assertEqual(len(plan.segments[0].points), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

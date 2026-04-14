@@ -17,6 +17,7 @@ from src.collectible_materials import (
     active_collectible_materials,
     collectible_ids_for_kind,
 )
+from src.map_pyramid import MapPyramid
 from src.pipeline import LocalizationPipeline
 from src.poi_overlay import PoiOverlay, PoiRenderOptions
 from src.resource_routes import (
@@ -114,6 +115,7 @@ class LocalizationGUI:
         self._map_canvas_image_id: int | None = None
         self._map_source_path = ""
         self._map_source_image: np.ndarray | None = None
+        self._map_source_pyramid: MapPyramid | None = None
         self._map_base_view: np.ndarray | None = None
         self._map_base_key: tuple | None = None
         self._map_view_origin: tuple[int, int] = (0, 0)
@@ -121,10 +123,14 @@ class LocalizationGUI:
         self._map_view_center_ratio: tuple[float, float] | None = None
         self._map_scale: float = 1.0
         self._map_refresh_pending = False
+        self._map_refresh_job: str | None = None
+        self._map_refresh_delay_ms = 0
         self._map_refresh_center = False
         self._center_on_first_valid_result = False
         self._suppress_canvas_view_refresh = False
         self._live_map_refresh_interval_ms = 250
+        self._map_interaction_refresh_ms = 24
+        self._map_resize_refresh_ms = 48
         self._last_result: LocalizationResult | None = None
         self._resource_route_plan: ResourceRoutePlan | None = None
         self._resource_route_cache_dir = Path("outputs/route_cache")
@@ -840,17 +846,36 @@ class LocalizationGUI:
             self._poi_overlay_signature = signature
         return self._poi_overlay
 
-    def _schedule_map_refresh(self, center_on_result: bool = False, invalidate_base: bool = False) -> None:
+    def _schedule_map_refresh(
+        self,
+        center_on_result: bool = False,
+        invalidate_base: bool = False,
+        delay_ms: int = 0,
+    ) -> None:
         if invalidate_base:
             self._map_base_key = None
         self._map_refresh_center = self._map_refresh_center or center_on_result
-        if self._map_refresh_pending:
+        target_delay_ms = max(0, int(delay_ms))
+        if self._map_refresh_pending and self._map_refresh_delay_ms <= target_delay_ms:
             return
+
+        if self._map_refresh_job is not None:
+            try:
+                self.root.after_cancel(self._map_refresh_job)
+            except Exception:
+                pass
+
         self._map_refresh_pending = True
-        self.root.after_idle(self._flush_map_refresh)
+        self._map_refresh_delay_ms = target_delay_ms
+        if target_delay_ms <= 0:
+            self._map_refresh_job = self.root.after_idle(self._flush_map_refresh)
+        else:
+            self._map_refresh_job = self.root.after(target_delay_ms, self._flush_map_refresh)
 
     def _flush_map_refresh(self) -> None:
         self._map_refresh_pending = False
+        self._map_refresh_job = None
+        self._map_refresh_delay_ms = 0
         center_on_result = self._map_refresh_center
         self._map_refresh_center = False
         self._refresh_map_display(center_on_result=center_on_result)
@@ -909,7 +934,7 @@ class LocalizationGUI:
         )
 
         if self._map_base_key != base_key:
-            base_view = self._build_map_viewport(
+            base_view, pyramid_level_scale = self._build_map_viewport(
                 source_map=source_map,
                 scale=scale,
                 view_origin=view_origin,
@@ -918,6 +943,10 @@ class LocalizationGUI:
             )
 
             summary_text = f"地图: {source_map.shape[1]}x{source_map.shape[0]} | 显示: {display_width}x{display_height}"
+            if pyramid_level_scale < 0.999999:
+                render_width = max(1, int(round(source_map.shape[1] * pyramid_level_scale)))
+                render_height = max(1, int(round(source_map.shape[0] * pyramid_level_scale)))
+                summary_text = f"{summary_text} | 渲染层: {render_width}x{render_height}"
             overlay = self._ensure_display_overlay(config)
             if overlay is not None:
                 overlay.render_scale_x = scale
@@ -978,6 +1007,7 @@ class LocalizationGUI:
     def _ensure_map_source_loaded(self, map_path: str) -> np.ndarray:
         if self._map_source_image is None or self._map_source_path != map_path:
             self._map_source_image = load_image(map_path, grayscale=False)
+            self._map_source_pyramid = MapPyramid(self._map_source_image)
             self._map_source_path = map_path
             self._map_base_key = None
         return self._map_source_image
@@ -1107,35 +1137,21 @@ class LocalizationGUI:
         view_origin: tuple[int, int],
         canvas_width: int,
         canvas_height: int,
-    ) -> np.ndarray:
-        view_left, view_top = view_origin
-        source_height, source_width = source_map.shape[:2]
+    ) -> tuple[np.ndarray, float]:
         if scale <= 0.0:
-            return np.zeros((canvas_height, canvas_width, 3), dtype=source_map.dtype)
+            return np.zeros((canvas_height, canvas_width, 3), dtype=source_map.dtype), 1.0
 
-        src_x0 = max(0, min(source_width - 1, int(math.floor(view_left / scale))))
-        src_y0 = max(0, min(source_height - 1, int(math.floor(view_top / scale))))
-        src_x1 = min(source_width, max(src_x0 + 1, int(math.ceil((view_left + canvas_width) / scale)) + 1))
-        src_y1 = min(source_height, max(src_y0 + 1, int(math.ceil((view_top + canvas_height) / scale)) + 1))
+        pyramid = self._map_source_pyramid
+        if pyramid is None:
+            return source_map[:canvas_height, :canvas_width].copy(), 1.0
 
-        crop = source_map[src_y0:src_y1, src_x0:src_x1]
-        scaled_crop_width = max(1, int(math.ceil((src_x1 - src_x0) * scale)))
-        scaled_crop_height = max(1, int(math.ceil((src_y1 - src_y0) * scale)))
-        interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
-        scaled_crop = cv2.resize(crop, (scaled_crop_width, scaled_crop_height), interpolation=interpolation)
-
-        crop_origin_x = int(round(src_x0 * scale))
-        crop_origin_y = int(round(src_y0 * scale))
-        offset_x = max(0, view_left - crop_origin_x)
-        offset_y = max(0, view_top - crop_origin_y)
-        viewport = scaled_crop[offset_y : offset_y + canvas_height, offset_x : offset_x + canvas_width]
-
-        if viewport.shape[0] == canvas_height and viewport.shape[1] == canvas_width:
-            return viewport
-
-        padded = np.zeros((canvas_height, canvas_width, source_map.shape[2]), dtype=source_map.dtype)
-        padded[: viewport.shape[0], : viewport.shape[1]] = viewport
-        return padded
+        viewport, level = pyramid.render_viewport(
+            target_scale=scale,
+            view_origin=view_origin,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        return viewport, level.scale
 
     def _resource_route_cache_token(self) -> tuple:
         if self._resource_route_plan is None:
@@ -1150,13 +1166,13 @@ class LocalizationGUI:
         self.map_canvas.xview(*args)
         if not self._suppress_canvas_view_refresh:
             self._remember_current_view_center()
-            self._schedule_map_refresh(invalidate_base=True)
+            self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
 
     def _on_canvas_yview(self, *args) -> None:
         self.map_canvas.yview(*args)
         if not self._suppress_canvas_view_refresh:
             self._remember_current_view_center()
-            self._schedule_map_refresh(invalidate_base=True)
+            self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
 
     def _show_map_message(self, text: str) -> None:
         if self.map_canvas is None:
@@ -1180,16 +1196,16 @@ class LocalizationGUI:
         self._remember_current_view_center()
         current = float(self.map_zoom_var.get())
         self.map_zoom_var.set(max(0.5, min(8.0, current * factor)))
-        self._schedule_map_refresh(invalidate_base=True)
+        self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
 
     def _reset_map_zoom(self) -> None:
         self._remember_current_view_center()
         self.map_zoom_var.set(1.0)
-        self._schedule_map_refresh(invalidate_base=True)
+        self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
 
     def _on_map_zoom_changed(self, _value=None) -> None:
         self._remember_current_view_center()
-        self._schedule_map_refresh(invalidate_base=True)
+        self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
 
     def _recenter_on_current_position(self) -> None:
         if not self._result_has_position(self._last_result):
@@ -1201,7 +1217,7 @@ class LocalizationGUI:
         self._schedule_map_refresh(center_on_result=True, invalidate_base=True)
 
     def _on_map_canvas_configure(self, _event) -> None:
-        self._schedule_map_refresh(invalidate_base=True)
+        self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_resize_refresh_ms)
 
     def _on_map_mousewheel(self, event) -> str:
         if event.delta > 0 or getattr(event, "num", None) == 4:
@@ -1220,7 +1236,7 @@ class LocalizationGUI:
             return "break"
         self.map_canvas.scan_dragto(event.x, event.y, gain=1)
         self._remember_current_view_center()
-        self._schedule_map_refresh(invalidate_base=True)
+        self._schedule_map_refresh(invalidate_base=True, delay_ms=self._map_interaction_refresh_ms)
         return "break"
 
     def _remember_current_view_center(self) -> None:
